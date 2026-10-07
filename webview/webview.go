@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -99,12 +102,35 @@ func NewWithOptions(
 
 	return wv
 }
+func defaultUserDataFolder() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("webview: resolve user cache directory: %w", err)
+	}
+
+	folder := filepath.Join(base, "WebGo", "WebView2")
+
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		return "", fmt.Errorf("webview: create WebView2 user data folder: %w", err)
+	}
+
+	return folder, nil
+}
+
 func NewWithOptionsE(
 	opts WebViewOptions,
 ) (
 	WebView,
 	error,
 ) {
+	if opts.UserDataFolder == "" {
+		folder, err := defaultUserDataFolder()
+		if err != nil {
+			return nil, err
+		}
+		opts.UserDataFolder = folder
+	}
+
 	ver, err :=
 		loader.GetInstalledVersion()
 
@@ -167,6 +193,7 @@ const wndClassName = "webview2_window"
 
 type webview struct {
 	comInitialized bool
+	osThreadLocked bool
 	opts           WebViewOptions
 	hwnd           w32.HWND
 	browser        *edge.Chromium
@@ -199,7 +226,21 @@ type binding struct {
 	stub string
 }
 
-func (wv *webview) init() error {
+func (wv *webview) init() (err error) {
+	runtime.LockOSThread()
+	wv.osThreadLocked = true
+
+	defer func() {
+		if err != nil && wv.osThreadLocked {
+			if wv.comInitialized {
+				w32.CoUninitialize()
+				wv.comInitialized = false
+			}
+			runtime.UnlockOSThread()
+			wv.osThreadLocked = false
+		}
+	}()
+
 	hr := w32.CoInitializeEx(0, w32.COINIT_APARTMENTTHREADED)
 	if hr < 0 {
 		return fmt.Errorf(
@@ -511,6 +552,11 @@ func (wv *webview) Destroy() {
 	if wv.comInitialized {
 		w32.CoUninitialize()
 		wv.comInitialized = false
+	}
+
+	if wv.osThreadLocked {
+		runtime.UnlockOSThread()
+		wv.osThreadLocked = false
 	}
 }
 
