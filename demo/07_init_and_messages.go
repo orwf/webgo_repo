@@ -7,15 +7,15 @@ import (
 	"log"
 	"time"
 
-	"webgo_repo-main/webview"
+	webgo "github.com/orwf/webgo_repo"
 )
 
 func main() {
-	w := webview.New(true)
+	w := webgo.New(true)
 	defer w.Destroy()
 
 	w.SetTitle("WebGo Demo 07 - Init and Messages")
-	w.SetSize(1000, 700, webview.HintNone)
+	w.SetSize(1000, 700, webgo.HintNone)
 
 	w.Init(`
 window.demoBoot = {
@@ -23,7 +23,7 @@ window.demoBoot = {
   loadedAt: new Date().toISOString()
 };
 
-window.chrome.webview.addEventListener("message", event => {
+window.chrome.webgo.addEventListener("message", event => {
   const el = document.querySelector("#native-events");
   if (!el) return;
   el.textContent += "\\n" + event.data;
