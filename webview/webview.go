@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"unsafe"
 
-	"webgo/webview/edge"
-	"webgo/webview/loader"
-	"webgo/webview/wAPI/w32"
+	"webgo_repo-main/webview/edge"
+	"webgo_repo-main/webview/loader"
+	"webgo_repo-main/webview/wAPI/w32"
 )
 
 type Hint int
@@ -31,7 +31,12 @@ type WindowOptions struct {
 	Height int32
 	IconId int
 }
-
+type bridgeMessage struct {
+	Type string            `json:"type"`
+	ID   string            `json:"id"`
+	Name string            `json:"name"`
+	Args []json.RawMessage `json:"args"`
+}
 type WebViewOptions struct {
 	Debug          bool
 	AutoFocus      bool
@@ -328,35 +333,40 @@ func (wv *webview) SetSize(width, height int32, hint Hint) {
 	}
 }
 
-func (w *webview) Navigate(url string) {
-	if !w.ready {
-		w.pendingNav = url
+func (wv *webview) Navigate(url string) {
+	wv.pendingMu.Lock()
+
+	if !wv.ready {
+		wv.pendingNav = url
+		wv.pendingMu.Unlock()
 		return
 	}
-	w.Dispatch(func() {
-		w.browser.Navigate(url)
+
+	wv.pendingMu.Unlock()
+
+	wv.Dispatch(func() {
+		if wv.browser != nil {
+			wv.browser.Navigate(url)
+		}
 	})
 }
 
 func (wv *webview) navigateDirect(url string) {
 	wv.pendingMu.Lock()
-	defer wv.pendingMu.Unlock()
-	// Always store as pending — OnReady will pick it up.
-	// Never call browser.Navigate directly from here.
-	if wv.ready {
-		// ready means OnReady already fired — navigate immediately
-		// but we must post it via Dispatch to get off any current
-		// call stack that might be inside a COM callback
-		go func() {
-			w32.Dispatch(func() {
-				fmt.Println("[Go] navigateDirect dispatching Navigate:", url)
-				wv.browser.Navigate(url)
-			})
-		}()
-	} else {
-		fmt.Println("[Go] navigateDirect storing pendingNav:", url)
+
+	if !wv.ready {
 		wv.pendingNav = url
+		wv.pendingMu.Unlock()
+		return
 	}
+
+	wv.pendingMu.Unlock()
+
+	wv.Dispatch(func() {
+		if wv.browser != nil {
+			wv.browser.Navigate(url)
+		}
+	})
 }
 
 func (wv *webview) NavigateToString(html string) {
@@ -376,28 +386,76 @@ func (wv *webview) OpenDevTools() {
 }
 
 func (wv *webview) Bind(name string, fn interface{}) error {
-	if reflect.ValueOf(fn).Kind() != reflect.Func {
+	if name == "" {
+		return fmt.Errorf("webview: Bind: name cannot be empty")
+	}
+
+	if fn == nil {
+		return fmt.Errorf("webview: Bind: %q function is nil", name)
+	}
+
+	v := reflect.ValueOf(fn)
+	if v.Kind() != reflect.Func {
 		return fmt.Errorf("webview: Bind: %q is not a function", name)
 	}
 
-	stub := fmt.Sprintf(`window['%s'] = function() {
-  var id = Math.random().toString(36).slice(2);
-  var args = Array.prototype.slice.call(arguments);
-  return new Promise(function(resolve, reject) {
-    window.__wv2_cbs = window.__wv2_cbs || {};
-    window.__wv2_cbs[id] = {resolve: resolve, reject: reject};
-    window.chrome.webview.postMessage(JSON.stringify({
-      type:'__call__', id:id, name:'%s', args:args
-    }));
-  });
-};`, name, name)
+	// JSON encoding produces a valid JavaScript string literal.
+	nameJSON, err := json.Marshal(name)
+	if err != nil {
+		return fmt.Errorf("webview: Bind: invalid name %q: %w", name, err)
+	}
+
+	jsName := string(nameJSON)
+
+	stub := fmt.Sprintf(`
+(function () {
+	const name = %s;
+
+	window[name] = function () {
+		const id =
+			Date.now().toString(36) + "-" +
+			Math.random().toString(36).slice(2);
+
+		const args = Array.prototype.slice.call(arguments);
+
+		return new Promise(function (resolve, reject) {
+			window.__wv2_cbs = window.__wv2_cbs || {};
+
+			window.__wv2_cbs[id] = {
+				resolve: resolve,
+				reject: reject
+			};
+
+			window.chrome.webview.postMessage(JSON.stringify({
+				type: "__call__",
+				id: id,
+				name: name,
+				args: args
+			}));
+		});
+	};
+})();
+`, jsName)
 
 	wv.bindingsMu.Lock()
-	wv.bindings[name] = binding{fn: fn, stub: stub}
+	wv.bindings[name] = binding{
+		fn:   fn,
+		stub: stub,
+	}
 	wv.bindingsMu.Unlock()
 
-	// Register for future page loads
-	wv.browser.Init(stub)
+	if wv.browser != nil {
+		wv.browser.Init(stub)
+
+		wv.pendingMu.Lock()
+		ready := wv.ready
+		wv.pendingMu.Unlock()
+
+		if ready {
+			wv.Eval(stub)
+		}
+	}
+
 	return nil
 }
 
@@ -405,52 +463,74 @@ func (wv *webview) Unbind(name string) {
 	wv.bindingsMu.Lock()
 	delete(wv.bindings, name)
 	wv.bindingsMu.Unlock()
-	wv.Eval(fmt.Sprintf(`delete window['%s']`, name))
+
+	nameJSON, err := json.Marshal(name)
+	if err != nil {
+		return
+	}
+
+	wv.Eval(fmt.Sprintf(
+		`delete window[%s];`,
+		string(nameJSON),
+	))
 }
 
-func (wv *webview) handleJSMessage(rawMsg string) {
+func (wv *webview) handleJSMessage(raw string) {
+	var msg bridgeMessage
 
-	// rawMsg is a JSON string that itself contains a JSON object.
-	// First, unmarshal it into a plain string.
-	var innerStr string
-	if err := json.Unmarshal([]byte(rawMsg), &innerStr); err != nil {
-		// Maybe it's already the object? Try direct unmarshal as fallback.
-		var msg struct {
-			Type string            `json:"type"`
-			ID   string            `json:"id"`
-			Name string            `json:"name"`
-			Args []json.RawMessage `json:"args"`
-		}
-		if err2 := json.Unmarshal([]byte(rawMsg), &msg); err2 == nil {
-			wv.processJSMessage(msg)
+	// WebView2 may give us a JSON encoded string containing our JSON.
+	var encoded string
+
+	if err := json.Unmarshal([]byte(raw), &encoded); err == nil {
+		if err := json.Unmarshal([]byte(encoded), &msg); err != nil {
+			slog.Error(
+				"invalid WebView bridge message",
+				"err", err,
+			)
 			return
 		}
-		fmt.Println("[Go] handleJSMessage JSON parse error:", err)
+	} else {
+		// Or it may already be the JSON object.
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			slog.Error(
+				"invalid WebView bridge message",
+				"err", err,
+			)
+			return
+		}
+	}
+
+	if msg.Type == "" {
 		return
 	}
 
-	// Now unmarshal the inner string into the message struct.
-	var msg struct {
-		Type string            `json:"type"`
-		ID   string            `json:"id"`
-		Name string            `json:"name"`
-		Args []json.RawMessage `json:"args"`
+	wv.processJSMessage(msg)
+}
+func (wv *webview) sendBindingError(id string, err error) {
+	response := struct {
+		Type  string `json:"type"`
+		ID    string `json:"id"`
+		Error string `json:"error"`
+	}{
+		Type:  "__result__",
+		ID:    id,
+		Error: err.Error(),
 	}
-	if err := json.Unmarshal([]byte(innerStr), &msg); err != nil {
-		fmt.Println("[Go] handleJSMessage inner JSON parse error:", err)
+
+	data, marshalErr := json.Marshal(response)
+	if marshalErr != nil {
 		return
 	}
-	wv.processJSMessage(msg)
+
+	wv.Dispatch(func() {
+		if wv.browser != nil {
+			wv.browser.PostMessage(string(data))
+		}
+	})
 }
 
 // processJSMessage handles the parsed message and calls the bound Go function.
-func (wv *webview) processJSMessage(msg struct {
-	Type string            `json:"type"`
-	ID   string            `json:"id"`
-	Name string            `json:"name"`
-	Args []json.RawMessage `json:"args"`
-}) {
-
+func (wv *webview) processJSMessage(msg bridgeMessage) {
 	if msg.Type != "__call__" {
 		return
 	}
@@ -458,23 +538,47 @@ func (wv *webview) processJSMessage(msg struct {
 	wv.bindingsMu.RLock()
 	b, ok := wv.bindings[msg.Name]
 	wv.bindingsMu.RUnlock()
+
 	if !ok {
+		wv.sendBindingError(
+			msg.ID,
+			fmt.Errorf("binding %q does not exist", msg.Name),
+		)
 		return
 	}
 
-	// Call the bound function (already on UI thread)
-	result, err := callBinding(b.fn, msg.Args)
+	// Never execute arbitrary bound functions inside the WebView2 UI callback.
+	go func() {
+		result, err := callBinding(b.fn, msg.Args)
 
-	// Build the reply JSON
-	var reply string
-	if err != nil {
-		errBytes, _ := json.Marshal(err.Error())
-		reply = fmt.Sprintf(`{"type":"__result__","id":"%s","error":%s}`, msg.ID, errBytes)
-	} else {
-		resBytes, _ := json.Marshal(result)
-		reply = fmt.Sprintf(`{"type":"__result__","id":"%s","result":%s}`, msg.ID, resBytes)
-	}
-	wv.browser.PostMessage(reply)
+		var response struct {
+			Type   string      `json:"type"`
+			ID     string      `json:"id"`
+			Result interface{} `json:"result,omitempty"`
+			Error  string      `json:"error,omitempty"`
+		}
+
+		response.Type = "__result__"
+		response.ID = msg.ID
+
+		if err != nil {
+			response.Error = err.Error()
+		} else {
+			response.Result = result
+		}
+
+		data, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			wv.sendBindingError(msg.ID, marshalErr)
+			return
+		}
+
+		wv.Dispatch(func() {
+			if wv.browser != nil {
+				wv.browser.PostMessage(string(data))
+			}
+		})
+	}()
 }
 
 func callBinding(fn interface{}, rawArgs []json.RawMessage) (interface{}, error) {
