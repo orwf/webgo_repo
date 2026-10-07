@@ -45,17 +45,118 @@ func (a *ICoreWebView2NavigationCompletedEventArgs) GetWebErrorStatus() (uint32,
 	)
 	return status, com.CheckHR(r, "get_WebErrorStatus")
 }
-func (a *ICoreWebView2NavigationStartingEventArgs) GetUri() (string, error) {
+func (
+	a *ICoreWebView2NavigationStartingEventArgs,
+) GetUri() (string, error) {
+
 	var uriPtr *uint16
-	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(a)), 3,
+
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(a)),
+		3,
 		uintptr(unsafe.Pointer(&uriPtr)),
 	)
-	if err := com.CheckHR(r, "get_Uri"); err != nil {
+
+	if err := com.CheckHR(
+		r,
+		"get_Uri",
+	); err != nil {
 		return "", err
 	}
-	return com.UTF16PtrToString(uriPtr), nil
+
+	if uriPtr == nil {
+		return "", nil
+	}
+
+	uri := com.UTF16PtrToString(uriPtr)
+
+	com.CoTaskMemFree(
+		uintptr(unsafe.Pointer(uriPtr)),
+	)
+
+	return uri, nil
 }
 
+func (
+	a *ICoreWebView2NavigationStartingEventArgs,
+) SetCancel(cancel bool) error {
+
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(a)),
+		8,
+		boolToUintptr(cancel),
+	)
+
+	return com.CheckHR(
+		r,
+		"put_Cancel",
+	)
+}
+
+func (
+	w *ICoreWebView2,
+) RemoveNavigationStartingHandler(
+	token EventRegistrationToken,
+) error {
+
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(w)),
+		8,
+		uintptr(token.Value),
+	)
+
+	return com.CheckHR(
+		r,
+		"remove_NavigationStarting",
+	)
+}
+
+func (
+	w *ICoreWebView2,
+) RemoveNavigationCompletedHandler(
+	token EventRegistrationToken,
+) error {
+
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(w)),
+		16,
+		uintptr(token.Value),
+	)
+
+	return com.CheckHR(
+		r,
+		"remove_NavigationCompleted",
+	)
+}
+
+func (
+	w *ICoreWebView2,
+) RemoveWebMessageReceivedHandler(
+	token EventRegistrationToken,
+) error {
+
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(w)),
+		35,
+		uintptr(token.Value),
+	)
+
+	return com.CheckHR(
+		r,
+		"remove_WebMessageReceived",
+	)
+}
+func (
+	s *ICoreWebView2Settings,
+) Release() uintptr {
+
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(s)),
+		2,
+	)
+
+	return r
+}
 func (w *ICoreWebView2) AddNavigationStartingHandler(handler uintptr) (EventRegistrationToken, error) {
 	var token EventRegistrationToken
 	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(w)), 7,
@@ -80,16 +181,37 @@ func (e *ICoreWebView2Environment) CreateCoreWebView2Controller(
 	return com.CheckHR(r, "CreateCoreWebView2Controller")
 }
 
-func (e *ICoreWebView2Environment) GetBrowserVersionString() (string, error) {
+func (
+	e *ICoreWebView2Environment,
+) GetBrowserVersionString() (string, error) {
+
 	var versionPtr *uint16
-	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(e)), 5,
+
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(e)),
+		5,
 		uintptr(unsafe.Pointer(&versionPtr)),
 	)
-	if err := com.CheckHR(r, "get_BrowserVersionString"); err != nil {
+
+	if err := com.CheckHR(
+		r,
+		"get_BrowserVersionString",
+	); err != nil {
 		return "", err
 	}
-	ver := com.UTF16PtrToString(versionPtr)
-	return ver, nil
+
+	if versionPtr == nil {
+		return "", nil
+	}
+
+	version :=
+		com.UTF16PtrToString(versionPtr)
+
+	com.CoTaskMemFree(
+		uintptr(unsafe.Pointer(versionPtr)),
+	)
+
+	return version, nil
 }
 
 func (e *ICoreWebView2Environment) AddRef() uintptr {
@@ -339,15 +461,37 @@ func (w *ICoreWebView2) AddWebMessageReceivedHandler(handler uintptr) (EventRegi
 	return token, err
 }
 
-func (w *ICoreWebView2) GetDocumentTitle() (string, error) {
+func (
+	w *ICoreWebView2,
+) GetDocumentTitle() (string, error) {
+
 	var titlePtr *uint16
-	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(w)), 48,
+
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(w)),
+		48,
 		uintptr(unsafe.Pointer(&titlePtr)),
 	)
-	if err := com.CheckHR(r, "get_DocumentTitle"); err != nil {
+
+	if err := com.CheckHR(
+		r,
+		"get_DocumentTitle",
+	); err != nil {
 		return "", err
 	}
-	return com.UTF16PtrToString(titlePtr), nil
+
+	if titlePtr == nil {
+		return "", nil
+	}
+
+	title :=
+		com.UTF16PtrToString(titlePtr)
+
+	com.CoTaskMemFree(
+		uintptr(unsafe.Pointer(titlePtr)),
+	)
+
+	return title, nil
 }
 
 func (w *ICoreWebView2) OpenDevToolsWindow() error {
