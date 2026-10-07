@@ -24,6 +24,7 @@ type Chromium struct {
 	navStartingHandler *navigationStartingHandler
 
 	onMessageReceived     func(string)
+	onNavigationStarting  func(string) bool
 	onNavigationCompleted func(bool)
 	onReady               func()
 
@@ -43,6 +44,15 @@ type Chromium struct {
 	scriptMu       sync.Mutex
 	scriptNextID   uint64
 	scriptHandlers map[uint64]*executeScriptCompletedHandler
+
+	navStartingToken EventRegistrationToken
+	navStartingSet   bool
+
+	messageToken EventRegistrationToken
+	messageSet   bool
+
+	navCompletedToken EventRegistrationToken
+	navCompletedSet   bool
 }
 
 func NewChromium(hwnd w32.HWND) *Chromium {
@@ -81,25 +91,79 @@ func (c *Chromium) Embed(userDataFolder string) error {
 			c.controller = ctrl
 			ctrl.AddRef()
 
-			wv, err := ctrl.GetICoreWebView2()
+			wv, err :=
+				ctrl.GetICoreWebView2()
+
 			if err != nil {
-				slog.Error("GetICoreWebView2 failed", "err", err)
+				slog.Error(
+					"GetICoreWebView2 failed",
+					"err",
+					err,
+				)
 				return
 			}
+
 			c.webview = wv
-			wv.AddRef()
 
 			// <-- ADD HERE: Register NavigationStarting handler
-			c.navStartingHandler = NewNavigationStartingHandler(func(args *ICoreWebView2NavigationStartingEventArgs) {
-				uri, err := args.GetUri()
-				if err != nil {
-					fmt.Println("[Chromium] NavigationStarting: error getting URI:", err)
-					return
-				}
-				fmt.Println("[Chromium] NavigationStarting to:", uri)
-			})
-			tok, err := wv.AddNavigationStartingHandler(c.navStartingHandler.AsPtr())
-			fmt.Println("[Chromium] AddNavigationStartingHandler token:", tok, "err:", err)
+			c.navStartingHandler =
+				NewNavigationStartingHandler(
+					func(
+						args *ICoreWebView2NavigationStartingEventArgs,
+					) {
+						uri, err :=
+							args.GetUri()
+
+						if err != nil {
+							slog.Error(
+								"NavigationStarting get URI failed",
+								"err",
+								err,
+							)
+
+							return
+						}
+
+						allow := true
+
+						if c.onNavigationStarting != nil {
+							allow =
+								c.onNavigationStarting(
+									uri,
+								)
+						}
+
+						if !allow {
+							if err :=
+								args.SetCancel(true); err != nil {
+
+								slog.Error(
+									"failed to cancel navigation",
+									"uri",
+									uri,
+									"err",
+									err,
+								)
+							}
+						}
+					},
+				)
+
+			token, err :=
+				wv.AddNavigationStartingHandler(
+					c.navStartingHandler.AsPtr(),
+				)
+
+			if err != nil {
+				slog.Error(
+					"AddNavigationStartingHandler failed",
+					"err",
+					err,
+				)
+			} else {
+				c.navStartingToken = token
+				c.navStartingSet = true
+			}
 
 			if settings, err := wv.GetSettings(); err == nil {
 				c.settings = settings
@@ -117,8 +181,21 @@ func (c *Chromium) Embed(userDataFolder string) error {
 					c.onMessageReceived(msg)
 				}
 			})
-			tok, err = wv.AddWebMessageReceivedHandler(c.msgHandler.AsPtr())
-			fmt.Println("[Chromium] AddWebMessageReceivedHandler token:", tok, "err:", err)
+			token, err =
+				wv.AddWebMessageReceivedHandler(
+					c.msgHandler.AsPtr(),
+				)
+
+			if err != nil {
+				slog.Error(
+					"AddWebMessageReceivedHandler failed",
+					"err",
+					err,
+				)
+			} else {
+				c.messageToken = token
+				c.messageSet = true
+			}
 
 			// ── ALWAYS register navigation completed handler ──────────────
 			c.navHandler = NewNavigationCompletedHandler(func(sender uintptr, args *ICoreWebView2NavigationCompletedEventArgs) {
@@ -131,8 +208,21 @@ func (c *Chromium) Embed(userDataFolder string) error {
 					c.onNavigationCompleted(success)
 				}
 			})
-			tok2, err2 := wv.AddNavigationCompletedHandler(c.navHandler.AsPtr())
-			fmt.Println("[Chromium] AddNavigationCompletedHandler token:", tok2, "err:", err2)
+			token, err =
+				wv.AddNavigationCompletedHandler(
+					c.navHandler.AsPtr(),
+				)
+
+			if err != nil {
+				slog.Error(
+					"AddNavigationCompletedHandler failed",
+					"err",
+					err,
+				)
+			} else {
+				c.navCompletedToken = token
+				c.navCompletedSet = true
+			}
 			fmt.Print("[Go_custom_chromium_wrapper] Chromium found ")
 			slog.Info("WebView2 ready")
 			fmt.Println("[Chromium] Calling onReady")
@@ -148,7 +238,13 @@ func (c *Chromium) Embed(userDataFolder string) error {
 	_, err := loader.CreateEnvironmentWithOptions(nil, udFolder, 0, c.envHandler.AsPtr())
 	return err
 }
-
+func (
+	c *Chromium,
+) OnNavigationStarting(
+	fn func(string) bool,
+) {
+	c.onNavigationStarting = fn
+}
 func (c *Chromium) Navigate(url string) {
 	if c.webview == nil {
 		return
@@ -167,12 +263,30 @@ func (c *Chromium) NavigateToString(html string) {
 	}
 }
 
-func (c *Chromium) Init(script string) {
+func (c *Chromium) Init(
+	script string,
+) error {
+
 	if c.webview == nil {
-		return
+		return fmt.Errorf(
+			"webview2 is not ready",
+		)
 	}
 
-	c.webview.AddScriptToExecuteOnDocumentCreated(script, 0)
+	if err :=
+		c.webview.
+			AddScriptToExecuteOnDocumentCreated(
+				script,
+				0,
+			); err != nil {
+
+		return fmt.Errorf(
+			"AddScriptToExecuteOnDocumentCreated: %w",
+			err,
+		)
+	}
+
+	return nil
 }
 
 func (c *Chromium) Eval(script string) {
@@ -226,18 +340,32 @@ func (c *Chromium) EvalWithResult(script string, fn func(string)) {
 	}
 }
 
-func (c *Chromium) PostMessage(msg string) {
+func (c *Chromium) PostMessage(
+	msg string,
+) error {
+
 	if c.webview == nil {
-		return
+		return fmt.Errorf(
+			"webview2 is not ready",
+		)
 	}
-	c.webview.PostWebMessageAsString(msg)
+
+	return c.webview.
+		PostWebMessageAsString(msg)
 }
 
-func (c *Chromium) PostJSON(json string) {
+func (c *Chromium) PostJSON(
+	json string,
+) error {
+
 	if c.webview == nil {
-		return
+		return fmt.Errorf(
+			"webview2 is not ready",
+		)
 	}
-	c.webview.PostWebMessageAsJSON(json)
+
+	return c.webview.
+		PostWebMessageAsJSON(json)
 }
 
 func (c *Chromium) OnMessage(fn func(string)) {
@@ -307,27 +435,101 @@ func (c *Chromium) SetStatusBarEnabled(enabled bool) {
 }
 
 func (c *Chromium) Destroy() {
-	if c.controller != nil {
-		c.controller.Close()
-		c.controller.Release()
-		c.controller = nil
+	if c.webview != nil {
+		if c.navStartingSet {
+			if err :=
+				c.webview.
+					RemoveNavigationStartingHandler(
+						c.navStartingToken,
+					); err != nil {
+
+				slog.Error(
+					"remove NavigationStarting failed",
+					"err",
+					err,
+				)
+			}
+
+			c.navStartingSet = false
+		}
+
+		if c.messageSet {
+			if err :=
+				c.webview.
+					RemoveWebMessageReceivedHandler(
+						c.messageToken,
+					); err != nil {
+
+				slog.Error(
+					"remove WebMessageReceived failed",
+					"err",
+					err,
+				)
+			}
+
+			c.messageSet = false
+		}
+
+		if c.navCompletedSet {
+			if err :=
+				c.webview.
+					RemoveNavigationCompletedHandler(
+						c.navCompletedToken,
+					); err != nil {
+
+				slog.Error(
+					"remove NavigationCompleted failed",
+					"err",
+					err,
+				)
+			}
+
+			c.navCompletedSet = false
+		}
 	}
+
+	if c.settings != nil {
+		c.settings.Release()
+		c.settings = nil
+	}
+
+	if c.controller != nil {
+		if err :=
+			c.controller.Close(); err != nil {
+
+			slog.Error(
+				"controller close failed",
+				"err",
+				err,
+			)
+		}
+	}
+
 	if c.webview != nil {
 		c.webview.Release()
 		c.webview = nil
 	}
+
+	if c.controller != nil {
+		c.controller.Release()
+		c.controller = nil
+	}
+
 	if c.environment != nil {
 		c.environment.Release()
 		c.environment = nil
 	}
-	// Nil out handler references so GC can reclaim them after destroy.
+
 	c.envHandler = nil
 	c.ctrlHandler = nil
 	c.msgHandler = nil
 	c.navHandler = nil
 	c.navStartingHandler = nil
+
 	c.scriptMu.Lock()
-	c.scriptHandlers = make(map[uint64]*executeScriptCompletedHandler)
+
+	clear(c.scriptHandlers)
+
 	c.scriptMu.Unlock()
 }
 
@@ -338,9 +540,4 @@ func (c *Chromium) BrowserVersion() string {
 	}
 	ver, _ := c.environment.GetBrowserVersionString()
 	return ver
-}
-
-func unsafePtr(p interface{}) uintptr {
-	type iface struct{ _, data unsafe.Pointer }
-	return uintptr((*iface)(unsafe.Pointer(&p)).data)
 }
