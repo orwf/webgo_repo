@@ -36,6 +36,33 @@ type GUID struct {
 	Data4 [8]byte
 }
 
+var (
+	ole32             = syscall.NewLazyDLL("ole32.dll")
+	procCoTaskMemFree = ole32.NewProc("CoTaskMemFree")
+)
+
+func CoTaskMemFree(ptr uintptr) {
+	if ptr == 0 {
+		return
+	}
+
+	procCoTaskMemFree.Call(ptr)
+}
+
+func GUIDEqual(a, b *GUID) bool {
+	if a == nil || b == nil {
+		return false
+	}
+
+	if a.Data1 != b.Data1 ||
+		a.Data2 != b.Data2 ||
+		a.Data3 != b.Data3 {
+		return false
+	}
+
+	return a.Data4 == b.Data4
+}
+
 // NewGUID parses a GUID string like "{F3B30B28-...}"
 func NewGUID(s string) *GUID {
 	// Strip braces
@@ -139,9 +166,11 @@ func (u *IUnknown) Release() uintptr {
 type HRESULT = int32
 
 const (
-	S_OK    HRESULT = 0
-	S_FALSE HRESULT = 1
-	E_FAIL  HRESULT = -2147467259
+	S_OK          HRESULT = 0
+	S_FALSE       HRESULT = 1
+	E_FAIL        uintptr = 0x80004005
+	E_NOINTERFACE uintptr = 0x80004002
+	E_POINTER     uintptr = 0x80004003
 )
 
 func Failed(hr uintptr) bool    { return int32(hr) < 0 }
