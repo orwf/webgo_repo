@@ -26,6 +26,7 @@ type Chromium struct {
 	onMessageReceived     func(string)
 	onNavigationStarting  func(string) bool
 	onNavigationCompleted func(bool)
+	onProcessFailed       func(ProcessFailedKind)
 	onReady               func()
 
 	// *** GC ANCHOR — critical ***
@@ -38,8 +39,9 @@ type Chromium struct {
 	envHandler  *environmentCompletedHandler
 	ctrlHandler *controllerCompletedHandler
 	// Event handlers registered on the webview also need to stay alive.
-	msgHandler *webMessageReceivedHandler
-	navHandler *navigationCompletedHandler
+	msgHandler     *webMessageReceivedHandler
+	navHandler     *navigationCompletedHandler
+	processHandler *processFailedHandler
 
 	scriptMu       sync.Mutex
 	scriptNextID   uint64
@@ -53,6 +55,9 @@ type Chromium struct {
 
 	navCompletedToken EventRegistrationToken
 	navCompletedSet   bool
+
+	processFailedToken EventRegistrationToken
+	processFailedSet   bool
 }
 
 func NewChromium(hwnd w32.HWND) *Chromium {
@@ -223,6 +228,30 @@ func (c *Chromium) Embed(userDataFolder string) error {
 				c.navCompletedToken = token
 				c.navCompletedSet = true
 			}
+
+			c.processHandler = NewProcessFailedHandler(
+				func(args *ICoreWebView2ProcessFailedEventArgs) {
+					kind, kindErr := args.GetKind()
+					if kindErr != nil {
+						slog.Error("ProcessFailed get kind failed", "err", kindErr)
+						return
+					}
+
+					slog.Error("WebView2 process failure", "kind", int32(kind))
+
+					if c.onProcessFailed != nil {
+						c.onProcessFailed(kind)
+					}
+				},
+			)
+
+			token, err = wv.AddProcessFailedHandler(c.processHandler.AsPtr())
+			if err != nil {
+				slog.Error("AddProcessFailedHandler failed", "err", err)
+			} else {
+				c.processFailedToken = token
+				c.processFailedSet = true
+			}
 			fmt.Print("[Go_custom_chromium_wrapper] Chromium found ")
 			slog.Info("WebView2 ready")
 			fmt.Println("[Chromium] Calling onReady")
@@ -376,6 +405,10 @@ func (c *Chromium) OnNavigationCompleted(fn func(bool)) {
 	c.onNavigationCompleted = fn
 }
 
+func (c *Chromium) OnProcessFailed(fn func(ProcessFailedKind)) {
+	c.onProcessFailed = fn
+}
+
 func (c *Chromium) OnReady(fn func()) {
 	c.onReady = fn
 }
@@ -399,6 +432,21 @@ func (c *Chromium) Focus() {
 	if c.controller != nil {
 		c.controller.MoveFocus(0) // COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC
 	}
+}
+
+func (c *Chromium) Reload() error {
+	if c.webview == nil {
+		return fmt.Errorf("webview2 is not ready")
+	}
+	return c.webview.Reload()
+}
+
+func (c *Chromium) Recover(userDataFolder string) error {
+	c.Destroy()
+	c.scriptMu.Lock()
+	c.scriptHandlers = make(map[uint64]*executeScriptCompletedHandler)
+	c.scriptMu.Unlock()
+	return c.Embed(userDataFolder)
 }
 
 func (c *Chromium) OpenDevTools() {
@@ -485,6 +533,13 @@ func (c *Chromium) Destroy() {
 			}
 
 			c.navCompletedSet = false
+		}
+
+		if c.processFailedSet {
+			if err := c.webview.RemoveProcessFailedHandler(c.processFailedToken); err != nil {
+				slog.Error("remove ProcessFailed failed", "err", err)
+			}
+			c.processFailedSet = false
 		}
 	}
 
