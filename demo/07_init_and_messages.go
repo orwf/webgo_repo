@@ -17,7 +17,7 @@ func main() {
 	w.SetTitle("WebGo Demo 07 - Init and Messages")
 	w.SetSize(1000, 700, webview.HintNone)
 
-	w.Init(\`
+	w.Init(`
 window.demoBoot = {
   installedByGo: true,
   loadedAt: new Date().toISOString()
@@ -28,7 +28,7 @@ window.chrome.webview.addEventListener("message", event => {
   if (!el) return;
   el.textContent += "\\n" + event.data;
 });
-\`)
+`)
 
 	if err := w.Bind("startNativeEvents", func() string {
 		go func() {
@@ -49,7 +49,7 @@ window.chrome.webview.addEventListener("message", event => {
 		log.Fatal(err)
 	}
 
-	w.NavigateToString(\`<!doctype html>
+	w.NavigateToString(`<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -76,7 +76,7 @@ document.querySelector("#start").onclick = async () => {
 };
 </script>
 </body>
-</html>\`)
+</html>`)
 
 	w.Run()
 }
