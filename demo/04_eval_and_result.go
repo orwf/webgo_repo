@@ -12,11 +12,11 @@ import (
 )
 
 func main() {
-	w := webview.New(true)
+	w := webgo.New(true)
 	defer w.Destroy()
 
 	w.SetTitle("WebGo Demo 04 - Eval")
-	w.SetSize(1000, 700, webview.HintNone)
+	w.SetSize(1000, 700, webgo.HintNone)
 
 	if err := w.Bind("requestGoEval", func() string {
 		go func() {
