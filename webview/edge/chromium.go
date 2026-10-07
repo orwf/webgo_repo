@@ -580,6 +580,7 @@ func (c *Chromium) Destroy() {
 	c.msgHandler = nil
 	c.navHandler = nil
 	c.navStartingHandler = nil
+	c.processHandler = nil
 
 	c.scriptMu.Lock()
 
