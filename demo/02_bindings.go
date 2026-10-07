@@ -6,7 +6,7 @@ import (
 	"log"
 	"runtime"
 
-	"webgo_repo-main/webview"
+	"github.com/orwf/webgo_repo/webview"
 )
 
 type SystemInfo struct {
