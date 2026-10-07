@@ -9,10 +9,10 @@ import (
 )
 
 func main() {
-	w, err := webview.NewWithOptionsE(webview.WebViewOptions{
+	w, err := webgo.NewWithOptionsE(webgo.WebViewOptions{
 		Debug:     true,
 		AutoFocus: true,
-		Window: webview.WindowOptions{
+		Window: webgo.WindowOptions{
 			Title:  "WebGo Demo 01 - Basic Window",
 			Width:  1000,
 			Height: 700,
