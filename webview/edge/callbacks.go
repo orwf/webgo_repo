@@ -4,36 +4,110 @@ package edge
 
 import (
 	"fmt"
+	"sync/atomic"
 	"unsafe"
 
 	"webgo_repo-main/webview/wAPI/com"
 )
 
-// ─────────────────────────────────────────────────────────────────
-// COM CALLBACK PATTERN
-//
-// WebView2 uses COM callbacks for async operations:
-//   CreateCoreWebView2EnvironmentWithOptions(... handler)
-//                                                 ↑
-//   handler.Invoke(HRESULT, ICoreWebView2Environment*)
-//
-// To implement a COM interface in Go without CGo we create a struct
-// with a vtable we build ourselves:
-//
-//   vtable[0] = QueryInterface function pointer
-//   vtable[1] = AddRef function pointer
-//   vtable[2] = Release function pointer
-//   vtable[3] = Invoke function pointer
-//
-// Each function pointer is a windows.NewCallback thunk.
-// ─────────────────────────────────────────────────────────────────
+var (
+	iidIUnknown = com.NewGUID("{00000000-0000-0000-C000-000000000046}")
 
-// ─────────────────────────────────────────────────────────────────
-// ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler
-// ─────────────────────────────────────────────────────────────────
+	iidEnvironmentCompleted = com.NewGUID("{4E8A3389-C9D8-4BD2-B6B5-124FEE6CC14D}")
+
+	iidControllerCompleted = com.NewGUID("{6C4819F3-C9B7-4260-8127-C9F5BDE7F68C}")
+
+	iidNavigationStarting = com.NewGUID("{9ADBE429-F36D-432B-9DDC-F8881FBD76E3}")
+
+	iidNavigationCompleted = com.NewGUID("{D33A35BF-1C49-4F98-93AB-006E0533FE1C}")
+
+	iidWebMessageReceived = com.NewGUID("{57213F19-00E6-49FA-8E07-898EA01ECBD2}")
+
+	iidExecuteScriptCompleted = com.NewGUID("{49511172-CC67-4BCA-9923-137112F4C4CC}")
+)
+
+func callbackQueryInterface(
+	this uintptr,
+	riid uintptr,
+	ppvObject uintptr,
+	interfaceIID *com.GUID,
+	refs *uint32,
+) uintptr {
+	if ppvObject == 0 {
+		return uintptr(uint32(com.E_POINTER))
+	}
+
+	*(*uintptr)(unsafe.Pointer(ppvObject)) = 0
+
+	if riid == 0 {
+		return uintptr(uint32(com.E_NOINTERFACE))
+	}
+
+	requested := (*com.GUID)(unsafe.Pointer(riid))
+
+	if !com.GUIDEqual(requested, iidIUnknown) &&
+		!com.GUIDEqual(requested, interfaceIID) {
+
+		return uintptr(uint32(com.E_NOINTERFACE))
+	}
+
+	*(*uintptr)(unsafe.Pointer(ppvObject)) = this
+
+	atomic.AddUint32(refs, 1)
+
+	return uintptr(uint32(com.S_OK))
+}
+
+func callbackAddRef(refs *uint32) uintptr {
+	return uintptr(atomic.AddUint32(refs, 1))
+}
+
+func callbackRelease(refs *uint32) uintptr {
+	for {
+		old := atomic.LoadUint32(refs)
+
+		if old == 0 {
+			return 0
+		}
+
+		next := old - 1
+
+		if atomic.CompareAndSwapUint32(
+			refs,
+			old,
+			next,
+		) {
+			return uintptr(next)
+		}
+	}
+}
+
+func safeCallback(fn func()) (hr uintptr) {
+	hr = uintptr(uint32(com.S_OK))
+
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println(
+				"[WebGo] panic inside COM callback:",
+				r,
+			)
+
+			hr = uintptr(uint32(com.E_FAIL))
+		}
+	}()
+
+	fn()
+
+	return
+}
+
+// ────────────────────────────────────────────────────────────────
+// Environment completed
+// ────────────────────────────────────────────────────────────────
 
 type environmentCompletedHandler struct {
 	vtable *environmentCompletedHandlerVTable
+	refs   uint32
 }
 
 type environmentCompletedHandlerVTable struct {
@@ -43,58 +117,69 @@ type environmentCompletedHandlerVTable struct {
 	Invoke         com.ComProc
 }
 
-type navigationStartingHandler struct {
-	vtable *navigationStartingHandlerVTable
-}
+func NewEnvironmentCompletedHandler(
+	fn func(uintptr, *ICoreWebView2Environment),
+) *environmentCompletedHandler {
 
-type navigationStartingHandlerVTable struct {
-	QueryInterface com.ComProc
-	AddRef         com.ComProc
-	Release        com.ComProc
-	Invoke         com.ComProc
-}
-
-// NewNavigationStartingHandler fires fn when a navigation starts.
-// fn receives: (args *ICoreWebView2NavigationStartingEventArgs)
-func NewNavigationStartingHandler(fn func(*ICoreWebView2NavigationStartingEventArgs)) *navigationStartingHandler {
-	h := &navigationStartingHandler{}
-	vt := &navigationStartingHandlerVTable{
-		QueryInterface: com.NewComProc(func(this, riid, ppvObject uintptr) uintptr {
-			return 0x80004002 // E_NOINTERFACE
-		}),
-		AddRef:  com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Release: com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Invoke: com.NewComProc(func(this, sender, args uintptr) uintptr {
-			eArgs := (*ICoreWebView2NavigationStartingEventArgs)(unsafe.Pointer(args))
-			fn(eArgs)
-			return 0 // S_OK
-		}),
+	h := &environmentCompletedHandler{
+		refs: 1,
 	}
-	h.vtable = vt
-	return h
-}
 
-func (h *navigationStartingHandler) AsPtr() uintptr {
-	return uintptr(unsafe.Pointer(h))
-}
+	h.vtable = &environmentCompletedHandlerVTable{
+		QueryInterface: com.NewComProc(
+			func(this, riid, ppvObject uintptr) uintptr {
+				obj := (*environmentCompletedHandler)(
+					unsafe.Pointer(this),
+				)
 
-// NewEnvironmentCompletedHandler creates a COM callback that calls fn
-// when the WebView2 environment is ready.
-// fn receives: (result HRESULT, environment *ICoreWebView2Environment)
-func NewEnvironmentCompletedHandler(fn func(uintptr, *ICoreWebView2Environment)) *environmentCompletedHandler {
-	h := &environmentCompletedHandler{}
-	vt := &environmentCompletedHandlerVTable{
-		QueryInterface: com.NewComProc(func(this, riid, ppvObject uintptr) uintptr {
-			return 0x80004002 // E_NOINTERFACE
-		}),
-		AddRef:  com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Release: com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Invoke: com.NewComProc(func(this, result, environment uintptr) uintptr {
-			fn(result, (*ICoreWebView2Environment)(unsafe.Pointer(environment)))
-			return 0 // S_OK
-		}),
+				return callbackQueryInterface(
+					this,
+					riid,
+					ppvObject,
+					iidEnvironmentCompleted,
+					&obj.refs,
+				)
+			},
+		),
+
+		AddRef: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*environmentCompletedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackAddRef(&obj.refs)
+			},
+		),
+
+		Release: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*environmentCompletedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackRelease(&obj.refs)
+			},
+		),
+
+		Invoke: com.NewComProc(
+			func(
+				this,
+				result,
+				environment uintptr,
+			) uintptr {
+				return safeCallback(func() {
+					fn(
+						result,
+						(*ICoreWebView2Environment)(
+							unsafe.Pointer(environment),
+						),
+					)
+				})
+			},
+		),
 	}
-	h.vtable = vt
+
 	return h
 }
 
@@ -102,12 +187,13 @@ func (h *environmentCompletedHandler) AsPtr() uintptr {
 	return uintptr(unsafe.Pointer(h))
 }
 
-// ─────────────────────────────────────────────────────────────────
-// ICoreWebView2CreateCoreWebView2ControllerCompletedHandler
-// ─────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────
+// Controller completed
+// ────────────────────────────────────────────────────────────────
 
 type controllerCompletedHandler struct {
 	vtable *controllerCompletedHandlerVTable
+	refs   uint32
 }
 
 type controllerCompletedHandlerVTable struct {
@@ -117,22 +203,69 @@ type controllerCompletedHandlerVTable struct {
 	Invoke         com.ComProc
 }
 
-// NewControllerCompletedHandler creates a COM callback called when
-// the WebView2 controller (the window embed) is ready.
-func NewControllerCompletedHandler(fn func(uintptr, *ICoreWebView2Controller)) *controllerCompletedHandler {
-	h := &controllerCompletedHandler{}
-	vt := &controllerCompletedHandlerVTable{
-		QueryInterface: com.NewComProc(func(this, riid, ppvObject uintptr) uintptr {
-			return 0x80004002
-		}),
-		AddRef:  com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Release: com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Invoke: com.NewComProc(func(this, result, controller uintptr) uintptr {
-			fn(result, (*ICoreWebView2Controller)(unsafe.Pointer(controller)))
-			return 0
-		}),
+func NewControllerCompletedHandler(
+	fn func(uintptr, *ICoreWebView2Controller),
+) *controllerCompletedHandler {
+
+	h := &controllerCompletedHandler{
+		refs: 1,
 	}
-	h.vtable = vt
+
+	h.vtable = &controllerCompletedHandlerVTable{
+		QueryInterface: com.NewComProc(
+			func(this, riid, ppvObject uintptr) uintptr {
+				obj := (*controllerCompletedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackQueryInterface(
+					this,
+					riid,
+					ppvObject,
+					iidControllerCompleted,
+					&obj.refs,
+				)
+			},
+		),
+
+		AddRef: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*controllerCompletedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackAddRef(&obj.refs)
+			},
+		),
+
+		Release: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*controllerCompletedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackRelease(&obj.refs)
+			},
+		),
+
+		Invoke: com.NewComProc(
+			func(
+				this,
+				result,
+				controller uintptr,
+			) uintptr {
+				return safeCallback(func() {
+					fn(
+						result,
+						(*ICoreWebView2Controller)(
+							unsafe.Pointer(controller),
+						),
+					)
+				})
+			},
+		),
+	}
+
 	return h
 }
 
@@ -140,12 +273,98 @@ func (h *controllerCompletedHandler) AsPtr() uintptr {
 	return uintptr(unsafe.Pointer(h))
 }
 
-// ─────────────────────────────────────────────────────────────────
-// ICoreWebView2WebMessageReceivedEventHandler
-// ─────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────
+// Navigation starting
+// ────────────────────────────────────────────────────────────────
+
+type navigationStartingHandler struct {
+	vtable *navigationStartingHandlerVTable
+	refs   uint32
+}
+
+type navigationStartingHandlerVTable struct {
+	QueryInterface com.ComProc
+	AddRef         com.ComProc
+	Release        com.ComProc
+	Invoke         com.ComProc
+}
+
+func NewNavigationStartingHandler(
+	fn func(*ICoreWebView2NavigationStartingEventArgs),
+) *navigationStartingHandler {
+
+	h := &navigationStartingHandler{
+		refs: 1,
+	}
+
+	h.vtable = &navigationStartingHandlerVTable{
+		QueryInterface: com.NewComProc(
+			func(this, riid, ppvObject uintptr) uintptr {
+				obj := (*navigationStartingHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackQueryInterface(
+					this,
+					riid,
+					ppvObject,
+					iidNavigationStarting,
+					&obj.refs,
+				)
+			},
+		),
+
+		AddRef: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*navigationStartingHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackAddRef(&obj.refs)
+			},
+		),
+
+		Release: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*navigationStartingHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackRelease(&obj.refs)
+			},
+		),
+
+		Invoke: com.NewComProc(
+			func(
+				this,
+				sender,
+				args uintptr,
+			) uintptr {
+				return safeCallback(func() {
+					fn(
+						(*ICoreWebView2NavigationStartingEventArgs)(
+							unsafe.Pointer(args),
+						),
+					)
+				})
+			},
+		),
+	}
+
+	return h
+}
+
+func (h *navigationStartingHandler) AsPtr() uintptr {
+	return uintptr(unsafe.Pointer(h))
+}
+
+// ────────────────────────────────────────────────────────────────
+// Web message received
+// ────────────────────────────────────────────────────────────────
 
 type webMessageReceivedHandler struct {
 	vtable *webMessageReceivedHandlerVTable
+	refs   uint32
 }
 
 type webMessageReceivedHandlerVTable struct {
@@ -155,42 +374,109 @@ type webMessageReceivedHandlerVTable struct {
 	Invoke         com.ComProc
 }
 
-// ICoreWebView2WebMessageReceivedEventArgs — used in the Invoke callback
-type ICoreWebView2WebMessageReceivedEventArgs struct{ vtable uintptr }
-
-// TryGetWebMessageAsString extracts the message string from event args.
-// vtable index 4 = TryGetWebMessageAsString
-func (a *ICoreWebView2WebMessageReceivedEventArgs) TryGetWebMessageAsString() (string, error) {
-	var msgPtr *uint16
-	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(a)), 4,
-		uintptr(unsafe.Pointer(&msgPtr)),
-	)
-	if err := com.CheckHR(r, "TryGetWebMessageAsString"); err != nil {
-		return "", err
-	}
-	return com.UTF16PtrToString(msgPtr), nil
+type ICoreWebView2WebMessageReceivedEventArgs struct {
+	vtable uintptr
 }
 
-// NewWebMessageReceivedHandler creates a COM handler that calls fn
-// whenever window.chrome.webview.postMessage(msg) is called in JS.
-func NewWebMessageReceivedHandler(fn func(string)) *webMessageReceivedHandler {
-	h := &webMessageReceivedHandler{}
-	vt := &webMessageReceivedHandlerVTable{
-		QueryInterface: com.NewComProc(func(this, riid, ppvObject uintptr) uintptr {
-			return 0x80004002
-		}),
-		AddRef:  com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Release: com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Invoke: com.NewComProc(func(this, sender, args uintptr) uintptr {
-			eArgs := (*ICoreWebView2WebMessageReceivedEventArgs)(unsafe.Pointer(args))
-			msg, err := eArgs.TryGetWebMessageAsString()
-			if err == nil {
-				fn(msg)
-			}
-			return 0
-		}),
+func (
+	a *ICoreWebView2WebMessageReceivedEventArgs,
+) TryGetWebMessageAsString() (string, error) {
+
+	var msgPtr *uint16
+
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(a)),
+		4,
+		uintptr(unsafe.Pointer(&msgPtr)),
+	)
+
+	if err := com.CheckHR(
+		r,
+		"TryGetWebMessageAsString",
+	); err != nil {
+		return "", err
 	}
-	h.vtable = vt
+
+	if msgPtr == nil {
+		return "", nil
+	}
+
+	msg := com.UTF16PtrToString(msgPtr)
+
+	com.CoTaskMemFree(
+		uintptr(unsafe.Pointer(msgPtr)),
+	)
+
+	return msg, nil
+}
+
+func NewWebMessageReceivedHandler(
+	fn func(string),
+) *webMessageReceivedHandler {
+
+	h := &webMessageReceivedHandler{
+		refs: 1,
+	}
+
+	h.vtable = &webMessageReceivedHandlerVTable{
+		QueryInterface: com.NewComProc(
+			func(this, riid, ppvObject uintptr) uintptr {
+				obj := (*webMessageReceivedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackQueryInterface(
+					this,
+					riid,
+					ppvObject,
+					iidWebMessageReceived,
+					&obj.refs,
+				)
+			},
+		),
+
+		AddRef: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*webMessageReceivedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackAddRef(&obj.refs)
+			},
+		),
+
+		Release: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*webMessageReceivedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackRelease(&obj.refs)
+			},
+		),
+
+		Invoke: com.NewComProc(
+			func(
+				this,
+				sender,
+				args uintptr,
+			) uintptr {
+				return safeCallback(func() {
+					e := (*ICoreWebView2WebMessageReceivedEventArgs)(
+						unsafe.Pointer(args),
+					)
+
+					msg, err :=
+						e.TryGetWebMessageAsString()
+
+					if err == nil {
+						fn(msg)
+					}
+				})
+			},
+		),
+	}
+
 	return h
 }
 
@@ -198,12 +484,13 @@ func (h *webMessageReceivedHandler) AsPtr() uintptr {
 	return uintptr(unsafe.Pointer(h))
 }
 
-// ─────────────────────────────────────────────────────────────────
-// ICoreWebView2NavigationCompletedEventHandler
-// ─────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────
+// Navigation completed
+// ────────────────────────────────────────────────────────────────
 
 type navigationCompletedHandler struct {
 	vtable *navigationCompletedHandlerVTable
+	refs   uint32
 }
 
 type navigationCompletedHandlerVTable struct {
@@ -213,30 +500,73 @@ type navigationCompletedHandlerVTable struct {
 	Invoke         com.ComProc
 }
 
-// NewNavigationCompletedHandler fires fn when a navigation finishes.
-// fn receives: (isSuccess bool)
-func NewNavigationCompletedHandler(fn func(uintptr, *ICoreWebView2NavigationCompletedEventArgs)) *navigationCompletedHandler {
-	h := &navigationCompletedHandler{}
-	vt := &navigationCompletedHandlerVTable{
-		QueryInterface: com.NewComProc(func(this, riid, ppvObject uintptr) uintptr {
-			return 0x80004002
-		}),
-		AddRef:  com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Release: com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Invoke: com.NewComProc(func(this, sender, args uintptr) uintptr {
-			eArgs := (*ICoreWebView2NavigationCompletedEventArgs)(unsafe.Pointer(args))
-			// Get and log error status
-			status, err := eArgs.GetWebErrorStatus()
-			if err != nil {
-				fmt.Println("[Chromium] NavigationCompleted: failed to get error status:", err)
-			} else {
-				fmt.Printf("[Chromium] NavigationCompleted: WebErrorStatus=%d\n", status)
-			}
-			fn(sender, eArgs)
-			return 0
-		}),
+func NewNavigationCompletedHandler(
+	fn func(
+		uintptr,
+		*ICoreWebView2NavigationCompletedEventArgs,
+	),
+) *navigationCompletedHandler {
+
+	h := &navigationCompletedHandler{
+		refs: 1,
 	}
-	h.vtable = vt
+
+	h.vtable = &navigationCompletedHandlerVTable{
+		QueryInterface: com.NewComProc(
+			func(this, riid, ppvObject uintptr) uintptr {
+				obj := (*navigationCompletedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackQueryInterface(
+					this,
+					riid,
+					ppvObject,
+					iidNavigationCompleted,
+					&obj.refs,
+				)
+			},
+		),
+
+		AddRef: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*navigationCompletedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackAddRef(&obj.refs)
+			},
+		),
+
+		Release: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*navigationCompletedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackRelease(&obj.refs)
+			},
+		),
+
+		Invoke: com.NewComProc(
+			func(
+				this,
+				sender,
+				args uintptr,
+			) uintptr {
+
+				return safeCallback(func() {
+					e :=
+						(*ICoreWebView2NavigationCompletedEventArgs)(
+							unsafe.Pointer(args),
+						)
+
+					fn(sender, e)
+				})
+			},
+		),
+	}
+
 	return h
 }
 
@@ -244,12 +574,13 @@ func (h *navigationCompletedHandler) AsPtr() uintptr {
 	return uintptr(unsafe.Pointer(h))
 }
 
-// ─────────────────────────────────────────────────────────────────
-// ICoreWebView2ExecuteScriptCompletedHandler
-// ─────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────
+// ExecuteScript completed
+// ────────────────────────────────────────────────────────────────
 
 type executeScriptCompletedHandler struct {
 	vtable *executeScriptCompletedHandlerVTable
+	refs   uint32
 }
 
 type executeScriptCompletedHandlerVTable struct {
@@ -259,23 +590,80 @@ type executeScriptCompletedHandlerVTable struct {
 	Invoke         com.ComProc
 }
 
-// NewExecuteScriptCompletedHandler fires fn with the JSON result of ExecuteScript.
-func NewExecuteScriptCompletedHandler(fn func(result string)) *executeScriptCompletedHandler {
-	h := &executeScriptCompletedHandler{}
-	vt := &executeScriptCompletedHandlerVTable{
-		QueryInterface: com.NewComProc(func(this, riid, ppvObject uintptr) uintptr {
-			return 0x80004002
-		}),
-		AddRef:  com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Release: com.NewComProc(func(this uintptr) uintptr { return 1 }),
-		Invoke: com.NewComProc(func(this, errorCode, resultPtr uintptr) uintptr {
-			if int32(errorCode) >= 0 && resultPtr != 0 {
-				fn(com.UTF16PtrToString((*uint16)(unsafe.Pointer(resultPtr))))
-			}
-			return 0
-		}),
+func NewExecuteScriptCompletedHandler(
+	fn func(string),
+) *executeScriptCompletedHandler {
+
+	h := &executeScriptCompletedHandler{
+		refs: 1,
 	}
-	h.vtable = vt
+
+	h.vtable = &executeScriptCompletedHandlerVTable{
+		QueryInterface: com.NewComProc(
+			func(this, riid, ppvObject uintptr) uintptr {
+				obj := (*executeScriptCompletedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackQueryInterface(
+					this,
+					riid,
+					ppvObject,
+					iidExecuteScriptCompleted,
+					&obj.refs,
+				)
+			},
+		),
+
+		AddRef: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*executeScriptCompletedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackAddRef(&obj.refs)
+			},
+		),
+
+		Release: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*executeScriptCompletedHandler)(
+					unsafe.Pointer(this),
+				)
+
+				return callbackRelease(&obj.refs)
+			},
+		),
+
+		Invoke: com.NewComProc(
+			func(
+				this,
+				errorCode,
+				resultPtr uintptr,
+			) uintptr {
+
+				return safeCallback(func() {
+					if int32(errorCode) < 0 {
+						return
+					}
+
+					if resultPtr == 0 {
+						fn("")
+						return
+					}
+
+					fn(
+						com.UTF16PtrToString(
+							(*uint16)(
+								unsafe.Pointer(resultPtr),
+							),
+						),
+					)
+				})
+			},
+		),
+	}
+
 	return h
 }
 
