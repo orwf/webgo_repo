@@ -21,7 +21,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"webgo_repo/webview/wAPI/com"
+	"github.com/orwf/webgo_repo/webview/wAPI/com"
 )
 
 // ─────────────────────────────────────────────────────────────────
