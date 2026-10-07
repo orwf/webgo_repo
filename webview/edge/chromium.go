@@ -5,12 +5,13 @@ package edge
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 	"syscall"
 	"unsafe"
 
-	"webgo/webview/loader"
-	"webgo/webview/wAPI/com"
-	"webgo/webview/wAPI/w32"
+	"webgo_repo-main/webview/loader"
+	"webgo_repo-main/webview/wAPI/com"
+	"webgo_repo-main/webview/wAPI/w32"
 )
 
 // Chromium manages the Edge/WebView2 subprocess embedded in a Win32 window.
@@ -38,10 +39,17 @@ type Chromium struct {
 	// Event handlers registered on the webview also need to stay alive.
 	msgHandler *webMessageReceivedHandler
 	navHandler *navigationCompletedHandler
+
+	scriptMu       sync.Mutex
+	scriptNextID   uint64
+	scriptHandlers map[uint64]*executeScriptCompletedHandler
 }
 
 func NewChromium(hwnd w32.HWND) *Chromium {
-	return &Chromium{hwnd: hwnd}
+	return &Chromium{
+		hwnd:           hwnd,
+		scriptHandlers: make(map[uint64]*executeScriptCompletedHandler),
+	}
 }
 
 // Embed initialises the WebView2 environment and embeds the browser into the
@@ -171,15 +179,51 @@ func (c *Chromium) Eval(script string) {
 	if c.webview == nil {
 		return
 	}
-	c.webview.ExecuteScript(script, 0)
+
+	if err := c.webview.ExecuteScript(script, 0); err != nil {
+		slog.Error(
+			"ExecuteScript failed",
+			"err", err,
+		)
+	}
 }
 
 func (c *Chromium) EvalWithResult(script string, fn func(string)) {
 	if c.webview == nil {
 		return
 	}
-	handler := NewExecuteScriptCompletedHandler(fn)
-	c.webview.ExecuteScript(script, handler.AsPtr())
+
+	c.scriptMu.Lock()
+	c.scriptNextID++
+	id := c.scriptNextID
+	c.scriptMu.Unlock()
+
+	var handler *executeScriptCompletedHandler
+
+	handler = NewExecuteScriptCompletedHandler(func(result string) {
+		if fn != nil {
+			fn(result)
+		}
+
+		c.scriptMu.Lock()
+		delete(c.scriptHandlers, id)
+		c.scriptMu.Unlock()
+	})
+
+	c.scriptMu.Lock()
+	c.scriptHandlers[id] = handler
+	c.scriptMu.Unlock()
+
+	if err := c.webview.ExecuteScript(script, handler.AsPtr()); err != nil {
+		c.scriptMu.Lock()
+		delete(c.scriptHandlers, id)
+		c.scriptMu.Unlock()
+
+		slog.Error(
+			"ExecuteScript failed",
+			"err", err,
+		)
+	}
 }
 
 func (c *Chromium) PostMessage(msg string) {
@@ -198,10 +242,6 @@ func (c *Chromium) PostJSON(json string) {
 
 func (c *Chromium) OnMessage(fn func(string)) {
 	c.onMessageReceived = fn
-	if c.webview != nil {
-		c.msgHandler = NewWebMessageReceivedHandler(fn)
-		c.webview.AddWebMessageReceivedHandler(c.msgHandler.AsPtr())
-	}
 }
 
 func (c *Chromium) OnNavigationCompleted(fn func(bool)) {
@@ -286,6 +326,9 @@ func (c *Chromium) Destroy() {
 	c.msgHandler = nil
 	c.navHandler = nil
 	c.navStartingHandler = nil
+	c.scriptMu.Lock()
+	c.scriptHandlers = make(map[uint64]*executeScriptCompletedHandler)
+	c.scriptMu.Unlock()
 }
 
 func (c *Chromium) BrowserVersion() string {
