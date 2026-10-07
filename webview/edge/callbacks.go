@@ -24,6 +24,8 @@ var (
 	iidWebMessageReceived = com.NewGUID("{57213F19-00E6-49FA-8E07-898EA01ECBD2}")
 
 	iidExecuteScriptCompleted = com.NewGUID("{49511172-CC67-4BCA-9923-137112F4C4CC}")
+
+	iidProcessFailed = com.NewGUID("{79E0AEA4-990B-42D9-AA1D-0FCC2E5BC7F1}")
 )
 
 func callbackQueryInterface(
@@ -668,5 +670,70 @@ func NewExecuteScriptCompletedHandler(
 }
 
 func (h *executeScriptCompletedHandler) AsPtr() uintptr {
+	return uintptr(unsafe.Pointer(h))
+}
+
+
+// ────────────────────────────────────────────────────────────────
+// Process failed
+// ────────────────────────────────────────────────────────────────
+
+type processFailedHandler struct {
+	vtable *processFailedHandlerVTable
+	refs   uint32
+}
+
+type processFailedHandlerVTable struct {
+	QueryInterface com.ComProc
+	AddRef          com.ComProc
+	Release         com.ComProc
+	Invoke          com.ComProc
+}
+
+func NewProcessFailedHandler(
+	fn func(*ICoreWebView2ProcessFailedEventArgs),
+) *processFailedHandler {
+	h := &processFailedHandler{refs: 1}
+
+	h.vtable = &processFailedHandlerVTable{
+		QueryInterface: com.NewComProc(
+			func(this, riid, ppvObject uintptr) uintptr {
+				obj := (*processFailedHandler)(unsafe.Pointer(this))
+				return callbackQueryInterface(
+					this,
+					riid,
+					ppvObject,
+					iidProcessFailed,
+					&obj.refs,
+				)
+			},
+		),
+		AddRef: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*processFailedHandler)(unsafe.Pointer(this))
+				return callbackAddRef(&obj.refs)
+			},
+		),
+		Release: com.NewComProc(
+			func(this uintptr) uintptr {
+				obj := (*processFailedHandler)(unsafe.Pointer(this))
+				return callbackRelease(&obj.refs)
+			},
+		),
+		Invoke: com.NewComProc(
+			func(this, sender, args uintptr) uintptr {
+				return safeCallback(func() {
+					fn((*ICoreWebView2ProcessFailedEventArgs)(
+						unsafe.Pointer(args),
+					))
+				})
+			},
+		),
+	}
+
+	return h
+}
+
+func (h *processFailedHandler) AsPtr() uintptr {
 	return uintptr(unsafe.Pointer(h))
 }
