@@ -6,15 +6,15 @@ import (
 	"fmt"
 	"log"
 
-	"webgo_repo-main/webview"
+	webgo "github.com/orwf/webgo_repo"
 )
 
 func main() {
-	w, err := webview.NewWithOptionsE(webview.WebViewOptions{
+	w, err := webgo.NewWithOptionsE(webgo.WebViewOptions{
 		Debug:          true,
 		AutoFocus:      true,
 		UserDataFolder: "./demo-profile",
-		Window: webview.WindowOptions{
+		Window: webgo.WindowOptions{
 			Title:  "WebGo Demo 08 - Native Info",
 			Width:  1050,
 			Height: 720,
