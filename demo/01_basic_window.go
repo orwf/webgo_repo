@@ -23,7 +23,7 @@ func main() {
 	}
 	defer w.Destroy()
 
-	w.NavigateToString(\`<!doctype html>
+	w.NavigateToString(`<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -41,7 +41,7 @@ code{background:#0b0e12;padding:3px 7px;border-radius:6px}
 <p>The native window, WebView2 renderer and Go backend are all active.</p>
 </div>
 </body>
-</html>\`)
+</html>`)
 
 	w.Run()
 }
