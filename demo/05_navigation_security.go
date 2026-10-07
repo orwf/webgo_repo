@@ -6,15 +6,15 @@ import (
 	"log"
 	"strings"
 
-	"webgo_repo-main/webview"
+	webgo "github.com/orwf/webgo_repo"
 )
 
 func main() {
-	w := webview.New(true)
+	w := webgo.New(true)
 	defer w.Destroy()
 
 	w.SetTitle("WebGo Demo 05 - Navigation Security")
-	w.SetSize(1050, 720, webview.HintNone)
+	w.SetSize(1050, 720, webgo.HintNone)
 
 	w.SetNavigationHandler(func(uri string) bool {
 		if uri == "about:blank" {
