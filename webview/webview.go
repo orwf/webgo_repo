@@ -178,9 +178,11 @@ type webview struct {
 	bindingsMu sync.RWMutex
 	bindings   map[string]binding
 
-	pendingMu  sync.Mutex
-	pendingNav string
-	ready      bool
+	pendingMu      sync.Mutex
+	pendingNav     string
+	pendingHTML    string
+	pendingHTMLSet bool
+	ready          bool
 
 	// Must be stored here — keeps the thunk reachable from GC.
 	wndProcCB   uintptr
@@ -349,12 +351,18 @@ func (wv *webview) init() error {
 		wv.ready = true
 
 		nav := wv.pendingNav
+		html := wv.pendingHTML
+		htmlSet := wv.pendingHTMLSet
 
 		wv.pendingNav = ""
+		wv.pendingHTML = ""
+		wv.pendingHTMLSet = false
 
 		wv.pendingMu.Unlock()
 
-		if nav != "" {
+		if htmlSet {
+			wv.browser.NavigateToString(html)
+		} else if nav != "" {
 			wv.browser.Navigate(nav)
 		}
 	})
@@ -582,6 +590,8 @@ func (wv *webview) Navigate(url string) {
 
 	if !wv.ready {
 		wv.pendingNav = url
+		wv.pendingHTML = ""
+		wv.pendingHTMLSet = false
 		wv.pendingMu.Unlock()
 		return
 	}
@@ -596,7 +606,23 @@ func (wv *webview) Navigate(url string) {
 }
 
 func (wv *webview) NavigateToString(html string) {
-	wv.Dispatch(func() { wv.browser.NavigateToString(html) })
+	wv.pendingMu.Lock()
+
+	if !wv.ready {
+		wv.pendingNav = ""
+		wv.pendingHTML = html
+		wv.pendingHTMLSet = true
+		wv.pendingMu.Unlock()
+		return
+	}
+
+	wv.pendingMu.Unlock()
+
+	wv.Dispatch(func() {
+		if wv.browser != nil {
+			wv.browser.NavigateToString(html)
+		}
+	})
 }
 
 // Public versions dispatch for cross-thread safety
