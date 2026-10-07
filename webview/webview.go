@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/orwf/webgo_repo/webview/edge"
@@ -209,7 +210,14 @@ type webview struct {
 	pendingNav     string
 	pendingHTML    string
 	pendingHTMLSet bool
+	lastNav        string
+	lastHTML       string
+	lastHTMLSet    bool
 	ready          bool
+
+	recovering         int32
+	recoveryAttempts   int32
+	recoveryGeneration uint64
 
 	// Must be stored here — keeps the thunk reachable from GC.
 	wndProcCB   uintptr
@@ -308,6 +316,10 @@ func (wv *webview) init() (err error) {
 		wv.handleJSMessage(rawMsg)
 	})
 
+	wv.browser.OnProcessFailed(func(kind edge.ProcessFailedKind) {
+		wv.handleProcessFailure(kind)
+	})
+
 	wv.browser.OnNavigationCompleted(
 		func(success bool) {
 			if !success {
@@ -390,6 +402,8 @@ func (wv *webview) init() (err error) {
 		wv.pendingMu.Lock()
 
 		wv.ready = true
+		atomic.StoreInt32(&wv.recovering, 0)
+		atomic.StoreInt32(&wv.recoveryAttempts, 0)
 
 		nav := wv.pendingNav
 		html := wv.pendingHTML
@@ -413,12 +427,135 @@ func (wv *webview) init() (err error) {
 	if err := wv.browser.Embed(wv.opts.UserDataFolder); err != nil {
 		return fmt.Errorf("webview: failed to embed WebView2: %w", err)
 	}
+	wv.armReadinessWatchdog()
 	fmt.Println("[Go] Embed returned (async, waiting for callbacks)")
 
 	w32.ShowWindow(hwnd, w32.SW_SHOWNORMAL)
 	w32.UpdateWindow(hwnd)
 	return nil
 }
+func (wv *webview) armReadinessWatchdog() {
+	generation := atomic.AddUint64(&wv.recoveryGeneration, 1)
+
+	time.AfterFunc(8*time.Second, func() {
+		wv.Dispatch(func() {
+			if atomic.LoadUint64(&wv.recoveryGeneration) != generation {
+				return
+			}
+
+			wv.pendingMu.Lock()
+			ready := wv.ready
+			wv.pendingMu.Unlock()
+
+			if ready {
+				return
+			}
+
+			slog.Error("WebView2 readiness timeout; rebuilding browser")
+			atomic.StoreInt32(&wv.recovering, 0)
+			wv.scheduleRecovery(edge.ProcessFailedBrowserExited)
+		})
+	})
+}
+
+func (wv *webview) handleProcessFailure(kind edge.ProcessFailedKind) {
+	switch kind {
+	case edge.ProcessFailedRenderExited,
+		edge.ProcessFailedFrameRenderExited:
+		wv.Dispatch(func() {
+			if wv.browser == nil {
+				return
+			}
+
+			if err := wv.browser.Reload(); err != nil {
+				slog.Error("WebView2 reload recovery failed", "err", err)
+				wv.scheduleRecovery(kind)
+				return
+			}
+
+			slog.Warn("WebView2 renderer failed; page reload requested", "kind", int32(kind))
+		})
+
+	case edge.ProcessFailedBrowserExited,
+		edge.ProcessFailedRenderUnresponsive:
+		wv.scheduleRecovery(kind)
+
+	default:
+		slog.Warn(
+			"WebView2 auxiliary process failed; runtime should recover it automatically",
+			"kind",
+			int32(kind),
+		)
+	}
+}
+
+func (wv *webview) scheduleRecovery(kind edge.ProcessFailedKind) {
+	if !atomic.CompareAndSwapInt32(&wv.recovering, 0, 1) {
+		return
+	}
+
+	wv.Dispatch(func() {
+		wv.recoverBrowser(kind)
+	})
+}
+
+func (wv *webview) recoverBrowser(kind edge.ProcessFailedKind) {
+	attempt := atomic.AddInt32(&wv.recoveryAttempts, 1)
+
+	if attempt > 3 {
+		atomic.StoreInt32(&wv.recovering, 0)
+		slog.Error(
+			"WebView2 recovery abandoned after repeated failures",
+			"attempts",
+			attempt-1,
+			"kind",
+			int32(kind),
+		)
+		wv.SetTitle("WebGo - WebView2 recovery failed")
+		return
+	}
+
+	wv.pendingMu.Lock()
+	wv.ready = false
+
+	if wv.lastHTMLSet {
+		wv.pendingHTML = wv.lastHTML
+		wv.pendingHTMLSet = true
+		wv.pendingNav = ""
+	} else {
+		wv.pendingNav = wv.lastNav
+		wv.pendingHTML = ""
+		wv.pendingHTMLSet = false
+	}
+
+	wv.pendingMu.Unlock()
+
+	slog.Warn(
+		"rebuilding WebView2",
+		"attempt",
+		attempt,
+		"kind",
+		int32(kind),
+	)
+
+	if wv.browser == nil {
+		atomic.StoreInt32(&wv.recovering, 0)
+		return
+	}
+
+	if err := wv.browser.Recover(wv.opts.UserDataFolder); err != nil {
+		slog.Error("WebView2 rebuild failed", "attempt", attempt, "err", err)
+		atomic.StoreInt32(&wv.recovering, 0)
+
+		time.AfterFunc(time.Duration(attempt)*750*time.Millisecond, func() {
+			wv.scheduleRecovery(kind)
+		})
+		return
+	}
+
+	wv.armReadinessWatchdog()
+}
+
 func (
 	wv *webview,
 ) SetNavigationHandler(
@@ -633,6 +770,9 @@ func (
 
 func (wv *webview) Navigate(url string) {
 	wv.pendingMu.Lock()
+	wv.lastNav = url
+	wv.lastHTML = ""
+	wv.lastHTMLSet = false
 
 	if !wv.ready {
 		wv.pendingNav = url
@@ -653,6 +793,9 @@ func (wv *webview) Navigate(url string) {
 
 func (wv *webview) NavigateToString(html string) {
 	wv.pendingMu.Lock()
+	wv.lastNav = ""
+	wv.lastHTML = html
+	wv.lastHTMLSet = true
 
 	if !wv.ready {
 		wv.pendingNav = ""
