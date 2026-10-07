@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/orwf/webgo_repo/webview/edge"
-	"github.com/orwf/webgo_repo/webview/loader"
-	"github.com/orwf/webgo_repo/webview/wAPI/w32"
+	"webgo_repo/webview/edge"
+	"webgo_repo/webview/loader"
+	"webgo_repo/webview/wAPI/w32"
 )
 
 type Hint int
