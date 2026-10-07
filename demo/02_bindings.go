@@ -16,11 +16,11 @@ type SystemInfo struct {
 }
 
 func main() {
-	w := webview.New(true)
+	w := webgo.New(true)
 	defer w.Destroy()
 
 	w.SetTitle("WebGo Demo 02 - Go Bindings")
-	w.SetSize(1000, 700, webview.HintNone)
+	w.SetSize(1000, 700, webgo.HintNone)
 
 	if err := w.Bind("greet", func(name string) string {
 		return "Hello, " + name + " — this came from Go."
