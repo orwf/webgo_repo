@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/orwf/webgo_repo/webview/loader"
-	"github.com/orwf/webgo_repo/webview/wAPI/com"
-	"github.com/orwf/webgo_repo/webview/wAPI/w32"
+	"webgo_repo/webview/loader"
+	"webgo_repo/webview/wAPI/com"
+	"webgo_repo/webview/wAPI/w32"
 )
 
 // Chromium manages the Edge/WebView2 subprocess embedded in a Win32 window.
