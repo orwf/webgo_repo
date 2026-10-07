@@ -11,15 +11,15 @@ import (
 )
 
 type UserInput struct {
-	Name  string \`json:"name"\`
-	Email string \`json:"email"\`
-	Age   int    \`json:"age"\`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	Age   int    `json:"age"`
 }
 
 type UserResult struct {
-	Valid   bool     \`json:"valid"\`
-	Summary string   \`json:"summary"\`
-	Tags    []string \`json:"tags"\`
+	Valid   bool     `json:"valid"`
+	Summary string   `json:"summary"`
+	Tags    []string `json:"tags"`
 }
 
 func main() {
@@ -49,7 +49,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	w.NavigateToString(\`<!doctype html>
+	w.NavigateToString(`<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -88,7 +88,7 @@ document.querySelector("#go").onclick = async () => {
 };
 </script>
 </body>
-</html>\`)
+</html>`)
 
 	w.Run()
 }
