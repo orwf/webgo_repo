@@ -21,10 +21,10 @@ func main() {
 	if err := w.Bind("requestGoEval", func() string {
 		go func() {
 			time.Sleep(250 * time.Millisecond)
-			w.Eval(\`
+			w.Eval(`
 document.querySelector("#from-go").textContent =
   "This text was changed by Go using Eval().";
-\`)
+`)
 		}()
 		return "Go scheduled an Eval() call."
 	}); err != nil {
@@ -32,19 +32,19 @@ document.querySelector("#from-go").textContent =
 	}
 
 	if err := w.Bind("inspectPage", func() string {
-		w.EvalWithResult(\`({
+		w.EvalWithResult(`({
   title: document.title,
   url: location.href,
   width: innerWidth,
   height: innerHeight
-})\`, func(result string) {
+})`, func(result string) {
 			fmt.Println("EvalWithResult:", result)
 
 			message := "Raw WebView2 JSON result: " + result
 			encoded, _ := json.Marshal(message)
 
 			w.Eval(fmt.Sprintf(
-				\`document.querySelector("#result").textContent = %s;\`,
+				`document.querySelector("#result").textContent = %s;`,
 				encoded,
 			))
 		})
@@ -53,7 +53,7 @@ document.querySelector("#from-go").textContent =
 		log.Fatal(err)
 	}
 
-	w.NavigateToString(\`<!doctype html>
+	w.NavigateToString(`<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -80,7 +80,7 @@ document.querySelector("#inspect").onclick = async () => {
 };
 </script>
 </body>
-</html>\`)
+</html>`)
 
 	w.Run()
 }
