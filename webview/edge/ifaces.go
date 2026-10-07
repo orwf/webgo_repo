@@ -37,6 +37,33 @@ import (
 type ICoreWebView2Environment struct{ vtable uintptr }
 type ICoreWebView2NavigationStartingEventArgs struct{ vtable uintptr }
 type ICoreWebView2NavigationCompletedEventArgs struct{ vtable uintptr }
+type ICoreWebView2ProcessFailedEventArgs struct{ vtable uintptr }
+
+type ProcessFailedKind int32
+
+const (
+	ProcessFailedBrowserExited ProcessFailedKind = iota
+	ProcessFailedRenderExited
+	ProcessFailedRenderUnresponsive
+	ProcessFailedFrameRenderExited
+	ProcessFailedUtilityExited
+	ProcessFailedSandboxHelperExited
+	ProcessFailedGPUExited
+	ProcessFailedPluginExited
+	ProcessFailedPluginBrokerExited
+	ProcessFailedUnknownExited
+)
+
+func (a *ICoreWebView2ProcessFailedEventArgs) GetKind() (ProcessFailedKind, error) {
+	var kind int32
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(a)),
+		3,
+		uintptr(unsafe.Pointer(&kind)),
+	)
+	return ProcessFailedKind(kind), com.CheckHR(r, "get_ProcessFailedKind")
+}
+
 
 func (a *ICoreWebView2NavigationCompletedEventArgs) GetWebErrorStatus() (uint32, error) {
 	var status uint32
@@ -509,6 +536,27 @@ func (w *ICoreWebView2) AddNavigationCompletedHandler(handler uintptr) (EventReg
 	fmt.Printf("[ifaces] AddNavigationCompletedHandler HRESULT=0x%08X token=%v err=%v\n", uint32(r), token, err)
 	return token, err
 }
+
+func (w *ICoreWebView2) AddProcessFailedHandler(handler uintptr) (EventRegistrationToken, error) {
+	var token EventRegistrationToken
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(w)),
+		25,
+		handler,
+		uintptr(unsafe.Pointer(&token)),
+	)
+	return token, com.CheckHR(r, "add_ProcessFailed")
+}
+
+func (w *ICoreWebView2) RemoveProcessFailedHandler(token EventRegistrationToken) error {
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(w)),
+		26,
+		uintptr(token.Value),
+	)
+	return com.CheckHR(r, "remove_ProcessFailed")
+}
+
 
 // ─────────────────────────────────────────────────────────────────
 // ICoreWebView2Settings
