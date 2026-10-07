@@ -10,9 +10,9 @@ import (
 )
 
 type SystemInfo struct {
-	OS   string \`json:"os"\`
-	Arch string \`json:"arch"\`
-	CPUs int    \`json:"cpus"\`
+	OS   string `json:"os"`
+	Arch string `json:"arch"`
+	CPUs int    `json:"cpus"`
 }
 
 func main() {
@@ -44,7 +44,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	w.NavigateToString(\`<!doctype html>
+	w.NavigateToString(`<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -75,7 +75,7 @@ document.querySelector("#system").onclick = async () => {
 };
 </script>
 </body>
-</html>\`)
+</html>`)
 
 	w.Run()
 }
