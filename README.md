@@ -36,7 +36,58 @@ The project is designed to provide a smaller, more direct alternative to Electro
 - Low-level WebView2 access
 - Designed for embedding native Go services behind modern web interfaces
 
+
 ---
+
+# Documentation
+
+WebGo now includes dedicated documentation for both application developers and contributors:
+
+| Guide | What it covers |
+| --- | --- |
+| [API Reference](docs/API.md) | Every public WebView method, options, navigation, bindings, JavaScript execution, sizing, lifecycle, HWND access and security notes |
+| [Examples](docs/EXAMPLES.md) | Complete practical examples for bindings, structured data, errors, databases, navigation rules, background work, multiple windows and native integration |
+| [Architecture](docs/ARCHITECTURE.md) | WebView2 initialization, COM interfaces, callbacks, GC anchors, dispatch queues, Win32 message handling, bridge internals and destruction order |
+
+## Public API at a glance
+
+| Capability | API |
+| --- | --- |
+| Create a WebView | `New`, `NewWithOptions`, `NewWithOptionsE` |
+| Start/stop lifecycle | `Run`, `Terminate`, `Destroy` |
+| UI-thread execution | `Dispatch` |
+| Window title | `SetTitle` |
+| Window size and constraints | `SetSize` with `HintNone`, `HintFixed`, `HintMin`, `HintMax` |
+| Navigate to a URL | `Navigate` |
+| Load HTML directly | `NavigateToString` |
+| Filter/cancel navigation | `SetNavigationHandler` |
+| Install document-start JavaScript | `Init` |
+| Execute JavaScript | `Eval`, `EvalDirect` |
+| Execute JavaScript and read the result | `EvalWithResult` |
+| Expose Go functions to JavaScript | `Bind`, `Unbind` |
+| Send raw native-to-page messages | `PostMessage` |
+| Open Edge DevTools | `OpenDevTools` |
+| Read WebView2 runtime version | `Version` |
+| Access the native HWND | `HWND` |
+
+## What you can build with WebGo
+
+The current feature set is suitable for Windows applications where a web frontend needs access to native Go logic, including:
+
+- desktop dashboards and administration tools
+- SQL/database frontends
+- TCP, Telnet or WebSocket clients
+- launchers and configuration utilities
+- local server control panels
+- file-management tools
+- monitoring and diagnostics applications
+- native applications with HTML/CSS interfaces
+- tools that need direct Win32 access alongside a modern UI
+- applications that isolate browser state with separate WebView2 user-data folders
+
+The JavaScript bridge is Promise based, so native Go operations can be consumed from frontend code using ordinary `async` / `await`.
+
+For concrete code, start with the [Examples guide](docs/EXAMPLES.md).
 
 # Architecture
 
