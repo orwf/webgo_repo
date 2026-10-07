@@ -10,6 +10,9 @@ package loader
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -19,12 +22,55 @@ import (
 // ─────────────────────────────────────────────────────────────────
 
 var (
-	dll = syscall.NewLazyDLL("webview/loader/WebView2Loader.dll")
+	dll = loadWebView2Loader()
 
-	procCreate               = dll.NewProc("CreateCoreWebView2EnvironmentWithOptions")
-	procCompareBrowserVer    = dll.NewProc("CompareBrowserVersions")
+	procCreate = dll.NewProc("CreateCoreWebView2EnvironmentWithOptions")
+
+	procCompareBrowserVer = dll.NewProc("CompareBrowserVersions")
+
 	procGetBrowserVersionStr = dll.NewProc("GetAvailableCoreWebView2BrowserVersionString")
 )
+
+func loadWebView2Loader() *syscall.LazyDLL {
+	var candidates []string
+
+	// 1. Current working directory.
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(wd, "webview", "loader", "WebView2Loader.dll"),
+			filepath.Join(wd, "loader", "WebView2Loader.dll"),
+			filepath.Join(wd, "WebView2Loader.dll"),
+		)
+	}
+
+	// 2. Directory containing the compiled executable.
+	if exe, err := os.Executable(); err == nil {
+		base := filepath.Dir(exe)
+
+		candidates = append(candidates,
+			filepath.Join(base, "WebView2Loader.dll"),
+			filepath.Join(base, "webview", "loader", "WebView2Loader.dll"),
+			filepath.Join(base, "loader", "WebView2Loader.dll"),
+		)
+	}
+
+	for _, candidate := range candidates {
+		abs, _ := filepath.Abs(candidate)
+
+		fmt.Println("[WebView2] checking:", abs)
+
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			fmt.Println("[WebView2] loader found:", abs)
+			return syscall.NewLazyDLL(abs)
+		}
+	}
+
+	panic(
+		"WebView2Loader.dll not found.\n" +
+			"Searched:\n  " +
+			strings.Join(candidates, "\n  "),
+	)
+}
 
 // ─────────────────────────────────────────────────────────────────
 // CreateCoreWebView2EnvironmentWithOptions
