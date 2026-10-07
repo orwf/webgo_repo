@@ -49,7 +49,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	w.NavigateToString(\`<!doctype html>
+	w.NavigateToString(`<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -86,7 +86,7 @@ document.querySelector("#rename").onclick = async () => {
 };
 </script>
 </body>
-</html>\`)
+</html>`)
 
 	w.Run()
 }
