@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/orwf/webgo_repo/webview/wAPI/com"
+	"webgo_repo/webview/wAPI/com"
 )
 
 var (
