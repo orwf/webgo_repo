@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -63,7 +64,16 @@ type WebView interface {
 	Version() string
 	HWND() uintptr
 	EvalDirect(script string)
+	SetNavigationHandler(
+		fn func(uri string) bool,
+	)
+	EvalWithResult(
+		script string,
+		fn func(string),
+	)
 }
+
+var ownedWindowCount int32
 
 func New(debug bool) WebView {
 	syscall.NewLazyDLL("shcore.dll").NewProc("SetProcessDpiAwareness").Call(1)
@@ -74,32 +84,96 @@ func New(debug bool) WebView {
 	})
 }
 
-func NewWithOptions(opts WebViewOptions) WebView {
-	ver, err := loader.GetInstalledVersion()
+func NewWithOptions(
+	opts WebViewOptions,
+) WebView {
+
+	wv, err :=
+		NewWithOptionsE(
+			opts,
+		)
+
 	if err != nil {
-		panic("webview: cannot check WebView2 runtime: " + err.Error())
+		panic(err)
 	}
-	if ver == "" {
-		panic("webview: WebView2 Runtime is not installed.\n" +
-			"  Download from: https://developer.microsoft.com/en-us/microsoft-edge/webview2/")
-	}
-	fmt.Print("[Go_custom_webview_wrapper] BongTTY found ")
-	slog.Info("WebView2 runtime found", "version", ver)
-	wv := &webview{opts: opts, bindings: make(map[string]binding)}
-	wv.init()
+
 	return wv
+}
+func NewWithOptionsE(
+	opts WebViewOptions,
+) (
+	WebView,
+	error,
+) {
+	ver, err :=
+		loader.GetInstalledVersion()
+
+	if err != nil {
+		return nil,
+			fmt.Errorf(
+				"webview: check WebView2 runtime: %w",
+				err,
+			)
+	}
+
+	if ver == "" {
+		return nil,
+			fmt.Errorf(
+				"webview: WebView2 Runtime is not installed",
+			)
+	}
+
+	slog.Info(
+		"WebView2 runtime found",
+		"version",
+		ver,
+	)
+
+	wv :=
+		&webview{
+			opts: opts,
+
+			bindings: make(
+				map[string]binding,
+			),
+		}
+
+	if err := wv.init(); err != nil {
+		return nil, err
+	}
+
+	return wv, nil
+}
+func (
+	wv *webview,
+) EvalWithResult(
+	script string,
+	fn func(string),
+) {
+	wv.Dispatch(func() {
+		if wv.browser == nil {
+			return
+		}
+
+		wv.browser.
+			EvalWithResult(
+				script,
+				fn,
+			)
+	})
 }
 
 const wndClassName = "webview2_window"
 
 type webview struct {
-	opts    WebViewOptions
-	hwnd    w32.HWND
-	browser *edge.Chromium
-
-	hint       Hint
-	minW, minH int32
-	maxW, maxH int32
+	comInitialized bool
+	opts           WebViewOptions
+	hwnd           w32.HWND
+	browser        *edge.Chromium
+	ownsWindow     bool
+	hint           Hint
+	minW, minH     int32
+	maxW, maxH     int32
 
 	bindingsMu sync.RWMutex
 	bindings   map[string]binding
@@ -109,7 +183,13 @@ type webview struct {
 	ready      bool
 
 	// Must be stored here — keeps the thunk reachable from GC.
-	wndProcCB uintptr
+	wndProcCB   uintptr
+	initMu      sync.Mutex
+	initScripts []string
+
+	navigationMu sync.RWMutex
+
+	navigationHandler func(string) bool
 }
 
 type binding struct {
@@ -117,18 +197,22 @@ type binding struct {
 	stub string
 }
 
-func (wv *webview) init() {
+func (wv *webview) init() error {
 	hr := w32.CoInitializeEx(0, w32.COINIT_APARTMENTTHREADED)
 	if hr < 0 {
-		panic(fmt.Sprintf("webview: CoInitializeEx failed: HRESULT 0x%08X", uint32(hr)))
+		return fmt.Errorf(
+			"webview: CoInitializeEx failed: HRESULT 0x%08X",
+			uint32(hr),
+		)
 	}
-
+	wv.comInitialized = true
 	wv.wndProcCB = syscall.NewCallback(wndProc)
 	w32.RegisterWindowClass(wndClassName, wv.wndProcCB)
 
 	var hwnd w32.HWND
 	if wv.opts.ExistingWindow != 0 {
 		hwnd = w32.HWND(wv.opts.ExistingWindow)
+		wv.ownsWindow = false
 	} else {
 		title := wv.opts.Window.Title
 		if title == "" {
@@ -143,12 +227,17 @@ func (wv *webview) init() {
 		}
 		hwnd = w32.CreateMainWindow(wndClassName, title, w, h, w32.GetModuleHandle(""))
 		if hwnd == 0 {
-			panic("webview: CreateWindowExW failed")
+			return fmt.Errorf("webview: CreateWindowExW failed")
 		}
+		wv.ownsWindow = true
+
+		atomic.AddInt32(
+			&ownedWindowCount,
+			1,
+		)
 	}
 	wv.hwnd = hwnd
 	w32.SetWindowContext(hwnd, wv)
-	w32.SetDispatchHWND(hwnd)
 	dark := 1
 	// Call DwmSetWindowAttribute from dwmapi.dll to set immersive dark mode
 	syscall.NewLazyDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute").Call(
@@ -158,7 +247,15 @@ func (wv *webview) init() {
 		uintptr(unsafe.Sizeof(dark)),
 	)
 	wv.browser = edge.NewChromium(hwnd)
+	wv.initMu.Lock()
 
+	wv.initScripts =
+		append(
+			wv.initScripts,
+			jsBridgeScript,
+		)
+
+	wv.initMu.Unlock()
 	// ── Set ALL callbacks BEFORE Embed ────────────────────────────
 	// These must be set before Embed() because the controller is
 	// created asynchronously inside Embed and registers handlers
@@ -168,43 +265,95 @@ func (wv *webview) init() {
 		wv.handleJSMessage(rawMsg)
 	})
 
-	wv.browser.OnNavigationCompleted(func(success bool) {
-		if !success {
-			return
-		}
-		// Post script injection back to message loop,
-		// not directly from inside the navigation callback
-		w32.Dispatch(func() {
-			fmt.Println("[Go] Injecting bridge script via dispatch")
-			wv.browser.Eval(jsBridgeScript)
-
-			wv.bindingsMu.RLock()
-			count := len(wv.bindings)
-			for _, b := range wv.bindings {
-				wv.browser.Eval(b.stub)
+	wv.browser.OnNavigationCompleted(
+		func(success bool) {
+			if !success {
+				slog.Warn(
+					"WebView navigation failed",
+				)
 			}
-			wv.bindingsMu.RUnlock()
-			fmt.Println("[Go] Injected bridge +", count, "stubs")
+			// Post script injection back to message loop,
+			// not directly from inside the navigation callback
+			w32.Dispatch(hwnd, func() {
+				fmt.Println("[Go] Injecting bridge script via dispatch")
+				wv.browser.Eval(jsBridgeScript)
+
+				wv.bindingsMu.RLock()
+				count := len(wv.bindings)
+				for _, b := range wv.bindings {
+					wv.browser.Eval(b.stub)
+				}
+				wv.bindingsMu.RUnlock()
+				fmt.Println("[Go] Injected bridge +", count, "stubs")
+			})
 		})
-	})
 
 	wv.browser.OnReady(func() {
-		fmt.Println("[Go] OnReady fired")
-		wv.browser.SetDevToolsEnabled(wv.opts.Debug)
-		wv.browser.SetContextMenusEnabled(wv.opts.Debug)
+		wv.browser.SetDevToolsEnabled(
+			wv.opts.Debug,
+		)
+		wv.browser.OnNavigationStarting(
+			func(uri string) bool {
+
+				wv.navigationMu.RLock()
+
+				fn :=
+					wv.navigationHandler
+
+				wv.navigationMu.RUnlock()
+
+				if fn == nil {
+					return true
+				}
+
+				return fn(uri)
+			},
+		)
+		wv.browser.SetContextMenusEnabled(
+			wv.opts.Debug,
+		)
+
 		wv.browser.SetStatusBarEnabled(false)
+
+		wv.initMu.Lock()
+
+		scripts :=
+			append(
+				[]string(nil),
+				wv.initScripts...,
+			)
+
+		wv.initMu.Unlock()
+
+		for _, script := range scripts {
+
+			if err :=
+				wv.browser.Init(
+					script,
+				); err != nil {
+
+				slog.Error(
+					"initialization script failed",
+					"err",
+					err,
+				)
+			}
+		}
 
 		if wv.opts.AutoFocus {
 			wv.browser.Focus()
 		}
 
 		wv.pendingMu.Lock()
+
 		wv.ready = true
+
 		nav := wv.pendingNav
+
 		wv.pendingNav = ""
+
 		wv.pendingMu.Unlock()
 
-		fmt.Println("[Go] OnReady: pendingNav =", nav)
 		if nav != "" {
 			wv.browser.Navigate(nav)
 		}
@@ -213,12 +362,24 @@ func (wv *webview) init() {
 	// ── NOW start the async init ──────────────────────────────────
 	fmt.Println("[Go] Calling Embed")
 	if err := wv.browser.Embed(wv.opts.UserDataFolder); err != nil {
-		panic("webview: failed to embed WebView2: " + err.Error())
+		return fmt.Errorf("webview: failed to embed WebView2: %w", err)
 	}
 	fmt.Println("[Go] Embed returned (async, waiting for callbacks)")
 
 	w32.ShowWindow(hwnd, w32.SW_SHOWNORMAL)
 	w32.UpdateWindow(hwnd)
+	return nil
+}
+func (
+	wv *webview,
+) SetNavigationHandler(
+	fn func(uri string) bool,
+) {
+	wv.navigationMu.Lock()
+
+	wv.navigationHandler = fn
+
+	wv.navigationMu.Unlock()
 }
 
 // wndProc — ALL params uintptr, see comment in init().
@@ -260,7 +421,9 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		return 0
 
 	case w32.WM_APP_DISPATCH:
-		w32.DrainDispatch()
+		w32.DrainDispatch(
+			w32.HWND(hwnd),
+		)
 		return 0
 
 	case w32.WM_CLOSE:
@@ -268,9 +431,26 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		return 0
 
 	case w32.WM_DESTROY:
-		w32.DeleteWindowContext(w32.HWND(hwnd))
-		w32.PostQuitMessage(0)
+		h :=
+			w32.HWND(hwnd)
+
+		w32.DeleteDispatchQueue(h)
+		w32.DeleteWindowContext(h)
+
+		if wv != nil &&
+			wv.ownsWindow {
+
+			if atomic.AddInt32(
+				&ownedWindowCount,
+				-1,
+			) == 0 {
+
+				w32.PostQuitMessage(0)
+			}
+		}
+
 		return 0
+
 	case 0x02E0: // WM_DPICHANGED
 		// lParam points to a RECT with the suggested new window size
 		rect := (*w32.Rect)(unsafe.Pointer(lParam))
@@ -292,42 +472,106 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	return uintptr(w32.DefWindowProc(w32.HWND(hwnd), uint32(msg), w32.WPARAM(wParam), w32.LPARAM(lParam)))
 }
 
-func (wv *webview) Run()               { w32.RunMessageLoop(wv.hwnd) }
-func (wv *webview) Terminate()         { w32.PostMessage(wv.hwnd, w32.WM_CLOSE, 0, 0) }
-func (wv *webview) Dispatch(fn func()) { w32.Dispatch(fn) }
-func (wv *webview) SetTitle(t string)  { w32.SetWindowText(wv.hwnd, t) }
-func (wv *webview) Version() string    { return wv.browser.BrowserVersion() }
-func (wv *webview) HWND() uintptr      { return uintptr(wv.hwnd) }
+func (wv *webview) Run()       { w32.RunMessageLoop(wv.hwnd) }
+func (wv *webview) Terminate() { w32.PostMessage(wv.hwnd, w32.WM_CLOSE, 0, 0) }
+func (wv *webview) Dispatch(fn func()) {
+	if fn == nil || wv.hwnd == 0 {
+		return
+	}
+
+	w32.Dispatch(
+		wv.hwnd,
+		fn,
+	)
+}
+func (wv *webview) SetTitle(t string) { w32.SetWindowText(wv.hwnd, t) }
+func (wv *webview) Version() string   { return wv.browser.BrowserVersion() }
+func (wv *webview) HWND() uintptr     { return uintptr(wv.hwnd) }
 
 func (wv *webview) Destroy() {
 	if wv.browser != nil {
 		wv.browser.Destroy()
 		wv.browser = nil
 	}
-	w32.CoUninitialize()
+
+	if wv.hwnd != 0 {
+		w32.DeleteDispatchQueue(
+			wv.hwnd,
+		)
+	}
+
+	if wv.comInitialized {
+		w32.CoUninitialize()
+		wv.comInitialized = false
+	}
 }
 
 var procSetWindowPos = syscall.NewLazyDLL("user32.dll").NewProc("SetWindowPos")
 
-func (wv *webview) SetSize(width, height int32, hint Hint) {
-	// Get DPI for this window
-	user32 := syscall.NewLazyDLL("user32.dll")
-	getDpiForWindow := user32.NewProc("GetDpiForWindow")
-	dpi, _, _ := getDpiForWindow.Call(uintptr(wv.hwnd))
+func (
+	wv *webview,
+) SetSize(
+	width,
+	height int32,
+	hint Hint,
+) {
+	wv.hint = hint
+
+	switch hint {
+	case HintFixed:
+		wv.minW = width
+		wv.minH = height
+		wv.maxW = width
+		wv.maxH = height
+
+	case HintMin:
+		wv.minW = width
+		wv.minH = height
+
+	case HintMax:
+		wv.maxW = width
+		wv.maxH = height
+	}
+
+	user32 :=
+		syscall.NewLazyDLL(
+			"user32.dll",
+		)
+
+	getDpiForWindow :=
+		user32.NewProc(
+			"GetDpiForWindow",
+		)
+
+	dpi, _, _ :=
+		getDpiForWindow.Call(
+			uintptr(wv.hwnd),
+		)
+
 	if dpi == 0 {
 		dpi = 96
 	}
 
-	// Scale logical → physical
-	physW := (width * int32(dpi)) / 96
-	physH := (height * int32(dpi)) / 96
+	physW :=
+		(width * int32(dpi)) /
+			96
+
+	physH :=
+		(height * int32(dpi)) /
+			96
 
 	procSetWindowPos.Call(
-		uintptr(wv.hwnd), 0,
-		0, 0,
-		uintptr(physW), uintptr(physH),
-		0x0002|0x0004|0x0010,
+		uintptr(wv.hwnd),
+		0,
+		0,
+		0,
+		uintptr(physW),
+		uintptr(physH),
+		0x0002|
+			0x0004|
+			0x0010,
 	)
+
 	if wv.browser != nil {
 		wv.browser.Resize()
 	}
@@ -351,30 +595,56 @@ func (wv *webview) Navigate(url string) {
 	})
 }
 
-func (wv *webview) navigateDirect(url string) {
-	wv.pendingMu.Lock()
-
-	if !wv.ready {
-		wv.pendingNav = url
-		wv.pendingMu.Unlock()
-		return
-	}
-
-	wv.pendingMu.Unlock()
-
-	wv.Dispatch(func() {
-		if wv.browser != nil {
-			wv.browser.Navigate(url)
-		}
-	})
-}
-
 func (wv *webview) NavigateToString(html string) {
 	wv.Dispatch(func() { wv.browser.NavigateToString(html) })
 }
 
 // Public versions dispatch for cross-thread safety
-func (wv *webview) Init(script string) { wv.Dispatch(func() { wv.initDirect(script) }) }
+func (wv *webview) Init(
+	script string,
+) {
+	if script == "" {
+		return
+	}
+
+	wv.initMu.Lock()
+
+	wv.initScripts =
+		append(
+			wv.initScripts,
+			script,
+		)
+
+	wv.initMu.Unlock()
+
+	wv.pendingMu.Lock()
+
+	ready := wv.ready
+
+	wv.pendingMu.Unlock()
+
+	if !ready {
+		return
+	}
+
+	wv.Dispatch(func() {
+		if wv.browser == nil {
+			return
+		}
+
+		if err :=
+			wv.browser.Init(
+				script,
+			); err != nil {
+
+			slog.Error(
+				"Init failed",
+				"err",
+				err,
+			)
+		}
+	})
+}
 func (wv *webview) Eval(script string) { wv.Dispatch(func() { wv.evalDirect(script) }) }
 
 func (wv *webview) PostMessage(msg string) {
@@ -444,16 +714,16 @@ func (wv *webview) Bind(name string, fn interface{}) error {
 	}
 	wv.bindingsMu.Unlock()
 
-	if wv.browser != nil {
-		wv.browser.Init(stub)
+	wv.Init(stub)
 
-		wv.pendingMu.Lock()
-		ready := wv.ready
-		wv.pendingMu.Unlock()
+	wv.pendingMu.Lock()
 
-		if ready {
-			wv.Eval(stub)
-		}
+	ready := wv.ready
+
+	wv.pendingMu.Unlock()
+
+	if ready {
+		wv.Eval(stub)
 	}
 
 	return nil
@@ -581,35 +851,114 @@ func (wv *webview) processJSMessage(msg bridgeMessage) {
 	}()
 }
 
-func callBinding(fn interface{}, rawArgs []json.RawMessage) (interface{}, error) {
+func callBinding(
+	fn interface{},
+	rawArgs []json.RawMessage,
+) (
+	result interface{},
+	err error,
+) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf(
+				"binding panic: %v",
+				r,
+			)
+
+			result = nil
+		}
+	}()
+
 	fnVal := reflect.ValueOf(fn)
 	fnType := fnVal.Type()
+
 	if fnType.NumIn() != len(rawArgs) {
-		return nil, fmt.Errorf("expected %d args, got %d", fnType.NumIn(), len(rawArgs))
+		return nil, fmt.Errorf(
+			"expected %d args, got %d",
+			fnType.NumIn(),
+			len(rawArgs),
+		)
 	}
-	args := make([]reflect.Value, fnType.NumIn())
+
+	args :=
+		make(
+			[]reflect.Value,
+			fnType.NumIn(),
+		)
+
 	for i := range args {
-		p := reflect.New(fnType.In(i))
-		if err := json.Unmarshal(rawArgs[i], p.Interface()); err != nil {
-			return nil, fmt.Errorf("arg %d: %w", i, err)
+		p :=
+			reflect.New(
+				fnType.In(i),
+			)
+
+		if err :=
+			json.Unmarshal(
+				rawArgs[i],
+				p.Interface(),
+			); err != nil {
+
+			return nil, fmt.Errorf(
+				"arg %d: %w",
+				i,
+				err,
+			)
 		}
-		args[i] = p.Elem()
+
+		args[i] =
+			p.Elem()
 	}
-	results := fnVal.Call(args)
+
+	results :=
+		fnVal.Call(args)
+
 	if len(results) == 0 {
 		return nil, nil
 	}
-	last := results[len(results)-1]
-	if last.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {
+
+	errorType :=
+		reflect.TypeOf(
+			(*error)(nil),
+		).Elem()
+
+	last :=
+		results[len(results)-1]
+
+	if last.Type().
+		Implements(errorType) {
+
 		if !last.IsNil() {
-			return nil, last.Interface().(error)
+			return nil,
+				last.Interface().(error)
 		}
-		results = results[:len(results)-1]
+
+		results =
+			results[:len(results)-1]
 	}
+
 	if len(results) == 0 {
 		return nil, nil
 	}
-	return results[0].Interface(), nil
+
+	if len(results) == 1 {
+		return results[0].
+				Interface(),
+			nil
+	}
+
+	values :=
+		make(
+			[]interface{},
+			len(results),
+		)
+
+	for i, value := range results {
+
+		values[i] =
+			value.Interface()
+	}
+
+	return values, nil
 }
 
 // jsBridgeScript is injected on every page load.
@@ -631,7 +980,7 @@ const jsBridgeScript = `(function() {
 })();`
 
 // Add direct versions for use on the UI thread
-func (wv *webview) initDirect(script string) { wv.browser.Init(script) }
+
 func (wv *webview) evalDirect(script string) { wv.browser.Eval(script) }
 
 // Implementation:
