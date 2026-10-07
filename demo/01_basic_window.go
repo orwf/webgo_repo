@@ -5,7 +5,7 @@ package main
 import (
 	"log"
 
-	"webgo_repo-main/webview"
+	"github.com/orwf/webgo_repo/webview"
 )
 
 func main() {
