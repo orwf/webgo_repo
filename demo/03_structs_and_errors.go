@@ -23,11 +23,11 @@ type UserResult struct {
 }
 
 func main() {
-	w := webview.New(true)
+	w := webgo.New(true)
 	defer w.Destroy()
 
 	w.SetTitle("WebGo Demo 03 - Structs and Errors")
-	w.SetSize(1000, 720, webview.HintNone)
+	w.SetSize(1000, 720, webgo.HintNone)
 
 	if err := w.Bind("validateUser", func(in UserInput) (UserResult, error) {
 		if strings.TrimSpace(in.Name) == "" {
