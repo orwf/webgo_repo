@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"unsafe"
 
-	"webgo/webview/wAPI/com"
+	"webgo_repo-main/webview/wAPI/com"
 )
 
 // ─────────────────────────────────────────────────────────────────
