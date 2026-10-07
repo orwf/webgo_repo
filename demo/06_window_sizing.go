@@ -5,39 +5,39 @@ package main
 import (
 	"log"
 
-	"webgo_repo-main/webview"
+	webgo "github.com/orwf/webgo_repo"
 )
 
 func main() {
-	w := webview.New(true)
+	w := webgo.New(true)
 	defer w.Destroy()
 
 	w.SetTitle("WebGo Demo 06 - Window Sizing")
-	w.SetSize(1000, 700, webview.HintNone)
+	w.SetSize(1000, 700, webgo.HintNone)
 
 	if err := w.Bind("normalSize", func() string {
-		w.SetSize(1000, 700, webview.HintNone)
+		w.SetSize(1000, 700, webgo.HintNone)
 		return "Normal resizing enabled."
 	}); err != nil {
 		log.Fatal(err)
 	}
 
 	if err := w.Bind("fixedSize", func() string {
-		w.SetSize(900, 600, webview.HintFixed)
+		w.SetSize(900, 600, webgo.HintFixed)
 		return "Window locked to 900x600."
 	}); err != nil {
 		log.Fatal(err)
 	}
 
 	if err := w.Bind("minimumSize", func() string {
-		w.SetSize(700, 500, webview.HintMin)
+		w.SetSize(700, 500, webgo.HintMin)
 		return "Minimum size set to 700x500."
 	}); err != nil {
 		log.Fatal(err)
 	}
 
 	if err := w.Bind("maximumSize", func() string {
-		w.SetSize(1200, 850, webview.HintMax)
+		w.SetSize(1200, 850, webgo.HintMax)
 		return "Maximum size set to 1200x850."
 	}); err != nil {
 		log.Fatal(err)
