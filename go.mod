@@ -1,4 +1,4 @@
-module webgo_repo-main
+module github.com/orwf/webgo_repo
 
 go 1.24
 
