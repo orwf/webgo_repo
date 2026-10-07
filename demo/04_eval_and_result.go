@@ -8,7 +8,7 @@ import (
 	"log"
 	"time"
 
-	"webgo_repo-main/webview"
+	"github.com/orwf/webgo_repo/webview"
 )
 
 func main() {
