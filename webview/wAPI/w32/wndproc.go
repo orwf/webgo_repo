@@ -122,41 +122,66 @@ func RunMessageLoop(hwnd HWND) {
 // This lets background goroutines safely call webview methods.
 
 var (
-	dispatchMu    sync.Mutex
-	dispatchQueue []func()
-	dispatchHWND  HWND
+	dispatchMu sync.Mutex
+
+	dispatchQueues = make(map[HWND][]func())
 )
 
-// SetDispatchHWND sets the HWND to receive WM_APP_DISPATCH messages.
-func SetDispatchHWND(hwnd HWND) {
-	dispatchMu.Lock()
-	dispatchHWND = hwnd
-	dispatchMu.Unlock()
-}
-
-// Dispatch posts fn to run on the UI thread.
-func Dispatch(fn func()) {
-	dispatchMu.Lock()
-	dispatchQueue = append(dispatchQueue, fn)
-	hwnd := dispatchHWND
-	dispatchMu.Unlock()
-
-	if hwnd != 0 {
-		PostMessage(hwnd, WM_APP_DISPATCH, 0, 0)
+func Dispatch(
+	hwnd HWND,
+	fn func(),
+) {
+	if hwnd == 0 || fn == nil {
+		return
 	}
+
+	dispatchMu.Lock()
+
+	dispatchQueues[hwnd] =
+		append(
+			dispatchQueues[hwnd],
+			fn,
+		)
+
+	dispatchMu.Unlock()
+
+	PostMessage(
+		hwnd,
+		WM_APP_DISPATCH,
+		0,
+		0,
+	)
 }
 
-// DrainDispatch runs all pending dispatched funcs.
-// Call this from the WndProc when WM_APP_DISPATCH is received.
-func DrainDispatch() {
+func DrainDispatch(hwnd HWND) {
 	dispatchMu.Lock()
-	fns := dispatchQueue
-	dispatchQueue = nil
+
+	fns :=
+		dispatchQueues[hwnd]
+
+	delete(
+		dispatchQueues,
+		hwnd,
+	)
+
 	dispatchMu.Unlock()
 
 	for _, fn := range fns {
-		fn()
+		if fn != nil {
+			fn()
+		}
 	}
+}
+
+func DeleteDispatchQueue(hwnd HWND) {
+	dispatchMu.Lock()
+
+	delete(
+		dispatchQueues,
+		hwnd,
+	)
+
+	dispatchMu.Unlock()
 }
 
 // UTF16 helper
