@@ -4,6 +4,7 @@ package edge
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -27,6 +28,25 @@ var (
 
 	iidProcessFailed = com.NewGUID("{79E0AEA4-990B-42D9-AA1D-0FCC2E5BC7F1}")
 )
+
+var callbackRoots = struct {
+	sync.Mutex
+	handlers map[uintptr]interface{}
+}{
+	handlers: make(map[uintptr]interface{}),
+}
+
+func retainCallbackRoot(ptr uintptr, handler interface{}) {
+	callbackRoots.Lock()
+	callbackRoots.handlers[ptr] = handler
+	callbackRoots.Unlock()
+}
+
+func releaseCallbackRoot(ptr uintptr) {
+	callbackRoots.Lock()
+	delete(callbackRoots.handlers, ptr)
+	callbackRoots.Unlock()
+}
 
 func callbackQueryInterface(
 	this uintptr,
@@ -82,6 +102,14 @@ func callbackRelease(refs *uint32) uintptr {
 			return uintptr(next)
 		}
 	}
+}
+
+func callbackReleaseAndUnroot(this uintptr, refs *uint32) uintptr {
+	remaining := callbackRelease(refs)
+	if remaining == 0 {
+		releaseCallbackRoot(this)
+	}
+	return remaining
 }
 
 func safeCallback(fn func()) (hr uintptr) {
@@ -160,7 +188,7 @@ func NewEnvironmentCompletedHandler(
 					unsafe.Pointer(this),
 				)
 
-				return callbackRelease(&obj.refs)
+				return callbackReleaseAndUnroot(this, &obj.refs)
 			},
 		),
 
@@ -246,7 +274,7 @@ func NewControllerCompletedHandler(
 					unsafe.Pointer(this),
 				)
 
-				return callbackRelease(&obj.refs)
+				return callbackReleaseAndUnroot(this, &obj.refs)
 			},
 		),
 
@@ -633,7 +661,7 @@ func NewExecuteScriptCompletedHandler(
 					unsafe.Pointer(this),
 				)
 
-				return callbackRelease(&obj.refs)
+				return callbackReleaseAndUnroot(this, &obj.refs)
 			},
 		),
 

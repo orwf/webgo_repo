@@ -448,6 +448,8 @@ scriptHandlers
 
 These references prevent the Go garbage collector from reclaiming callback structures while WebView2 can still call them.
 
+One-shot callbacks for environment creation, controller creation, and `ExecuteScript` are also held in a synchronized callback-root registry. The registry remains anchored until the COM reference count reaches zero; an immediate native-call failure releases the caller's reference as well. This keeps callbacks valid if shutdown or browser recovery drops the corresponding `Chromium` fields while WebView2 still has an outstanding callback or release.
+
 ---
 
 # ExecuteScript callback lifetime
