@@ -25,6 +25,7 @@ The project is designed to provide a smaller, more direct alternative to Electro
 - JavaScript evaluation with results
 - WebView message handling
 - Navigation events
+- WebView2 downloads and permission request callbacks
 - Document initialization scripts
 - WebView2 DevTools support
 - Dynamic window resizing
@@ -61,6 +62,8 @@ WebGo now includes dedicated documentation for both application developers and c
 | Navigate to a URL | `Navigate` |
 | Load HTML directly | `NavigateToString` |
 | Filter/cancel navigation | `SetNavigationHandler` |
+| Handle downloads | `SetDownloadHandler` |
+| Decide web permissions | `SetPermissionHandler` |
 | Install document-start JavaScript | `Init` |
 | Execute JavaScript | `Eval`, `EvalDirect` |
 | Execute JavaScript and read the result | `EvalWithResult` |

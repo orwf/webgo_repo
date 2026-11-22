@@ -27,6 +27,8 @@ type Chromium struct {
 	onNavigationStarting  func(string) bool
 	onNavigationCompleted func(bool)
 	onProcessFailed       func(ProcessFailedKind)
+	onDownloadStarting    func(*ICoreWebView2DownloadStartingEventArgs)
+	onPermissionRequested func(*ICoreWebView2PermissionRequestedEventArgs)
 	onReady               func()
 
 	// *** GC ANCHOR — critical ***
@@ -39,9 +41,12 @@ type Chromium struct {
 	envHandler  *environmentCompletedHandler
 	ctrlHandler *controllerCompletedHandler
 	// Event handlers registered on the webview also need to stay alive.
-	msgHandler     *webMessageReceivedHandler
-	navHandler     *navigationCompletedHandler
-	processHandler *processFailedHandler
+	msgHandler        *webMessageReceivedHandler
+	navHandler        *navigationCompletedHandler
+	processHandler    *processFailedHandler
+	downloadHandler   *downloadStartingHandler
+	permissionHandler *permissionRequestedHandler
+	webview4          *ICoreWebView2_4
 
 	scriptMu       sync.Mutex
 	scriptNextID   uint64
@@ -58,6 +63,12 @@ type Chromium struct {
 
 	processFailedToken EventRegistrationToken
 	processFailedSet   bool
+
+	downloadStartingToken EventRegistrationToken
+	downloadStartingSet   bool
+
+	permissionRequestedToken EventRegistrationToken
+	permissionRequestedSet   bool
 }
 
 func NewChromium(hwnd w32.HWND) *Chromium {
@@ -109,6 +120,41 @@ func (c *Chromium) Embed(userDataFolder string) error {
 			}
 
 			c.webview = wv
+
+			c.permissionHandler = NewPermissionRequestedHandler(func(args *ICoreWebView2PermissionRequestedEventArgs) {
+				if c.onPermissionRequested != nil {
+					c.onPermissionRequested(args)
+				}
+			})
+			permissionToken, permissionErr := wv.AddPermissionRequestedHandler(c.permissionHandler.AsPtr())
+			if permissionErr != nil {
+				slog.Error("AddPermissionRequestedHandler failed", "err", permissionErr)
+			} else {
+				c.permissionRequestedToken = permissionToken
+				c.permissionRequestedSet = true
+			}
+
+			webview4, queryErr := wv.QueryInterface4()
+			if queryErr != nil {
+				slog.Warn("WebView2 downloads are unavailable", "err", queryErr)
+			} else {
+				c.webview4 = webview4
+				c.downloadHandler = NewDownloadStartingHandler(func(args *ICoreWebView2DownloadStartingEventArgs) {
+					if c.onDownloadStarting != nil {
+						c.onDownloadStarting(args)
+					}
+				})
+				downloadToken, downloadErr := c.webview4.AddDownloadStartingHandler(c.downloadHandler.AsPtr())
+				if downloadErr != nil {
+					slog.Error("AddDownloadStartingHandler failed", "err", downloadErr)
+					c.webview4.Release()
+					c.webview4 = nil
+					c.downloadHandler = nil
+				} else {
+					c.downloadStartingToken = downloadToken
+					c.downloadStartingSet = true
+				}
+			}
 
 			// <-- ADD HERE: Register NavigationStarting handler
 			c.navStartingHandler =
@@ -409,6 +455,14 @@ func (c *Chromium) OnProcessFailed(fn func(ProcessFailedKind)) {
 	c.onProcessFailed = fn
 }
 
+func (c *Chromium) OnDownloadStarting(fn func(*ICoreWebView2DownloadStartingEventArgs)) {
+	c.onDownloadStarting = fn
+}
+
+func (c *Chromium) OnPermissionRequested(fn func(*ICoreWebView2PermissionRequestedEventArgs)) {
+	c.onPermissionRequested = fn
+}
+
 func (c *Chromium) OnReady(fn func()) {
 	c.onReady = fn
 }
@@ -541,6 +595,24 @@ func (c *Chromium) Destroy() {
 			}
 			c.processFailedSet = false
 		}
+
+		if c.permissionRequestedSet {
+			if err := c.webview.RemovePermissionRequestedHandler(c.permissionRequestedToken); err != nil {
+				slog.Error("remove PermissionRequested failed", "err", err)
+			}
+			c.permissionRequestedSet = false
+		}
+	}
+
+	if c.webview4 != nil {
+		if c.downloadStartingSet {
+			if err := c.webview4.RemoveDownloadStartingHandler(c.downloadStartingToken); err != nil {
+				slog.Error("remove DownloadStarting failed", "err", err)
+			}
+			c.downloadStartingSet = false
+		}
+		c.webview4.Release()
+		c.webview4 = nil
 	}
 
 	if c.settings != nil {
@@ -581,6 +653,8 @@ func (c *Chromium) Destroy() {
 	c.navHandler = nil
 	c.navStartingHandler = nil
 	c.processHandler = nil
+	c.downloadHandler = nil
+	c.permissionHandler = nil
 
 	c.scriptMu.Lock()
 

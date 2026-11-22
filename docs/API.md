@@ -39,6 +39,8 @@ type WebView interface {
     PostMessage(msg string)
 
     SetNavigationHandler(fn func(uri string) bool)
+    SetDownloadHandler(fn func(DownloadInfo) DownloadDecision)
+    SetPermissionHandler(fn func(PermissionRequest) PermissionState)
 
     OpenDevTools()
 
@@ -463,6 +465,48 @@ w.SetNavigationHandler(func(uri string) bool {
 This is one of the most important security features when native Go bindings are exposed to JavaScript.
 
 A remote page that can access privileged bindings could otherwise potentially call native application functions.
+
+---
+
+# Downloads
+
+## SetDownloadHandler
+
+```go
+w.SetDownloadHandler(func(info webview.DownloadInfo) webview.DownloadDecision {
+    log.Printf("download from %s (%s)", info.URI, info.MIMEType)
+    return webview.DownloadDecision{
+        ResultFilePath: `C:\Users\me\Downloads\report.pdf`,
+        Handled:        true,
+    }
+})
+```
+
+The callback runs when WebView2 starts a download. `DownloadInfo` includes the URI, content disposition, MIME type, and total bytes when known. Return a `DownloadDecision` to cancel the download, choose a result file path, or hide WebView2's default download UI with `Handled`.
+
+The result path should be absolute. WebView2 may overwrite an existing file at that path. If `SetDownloadHandler` is not set, WebView2 retains its normal download behavior and default UI. The callback runs synchronously on the WebView UI thread; keep it short and do not show a modal dialog from it.
+
+Download events require the WebView2 Runtime's `ICoreWebView2_4` interface (runtime version 1.0.902.49 or newer). On older runtimes, downloads continue to use WebView2's default behavior and WebGo logs that download callbacks are unavailable.
+
+---
+
+# Permission requests
+
+## SetPermissionHandler
+
+```go
+w.SetPermissionHandler(func(request webview.PermissionRequest) webview.PermissionState {
+    if request.URI == "https://app.example" &&
+        request.Kind == webview.PermissionKindGeolocation {
+        return webview.PermissionStateAllow
+    }
+    return webview.PermissionStateDeny
+})
+```
+
+The callback receives the requesting origin, permission kind, and whether the request was user initiated. Return `PermissionStateAllow`, `PermissionStateDeny`, or `PermissionStateDefault` to grant, deny, or leave the request to WebView2's default handling. If no handler is set, WebGo leaves the permission state unchanged.
+
+Permission callbacks run synchronously on the WebView UI thread. Make decisions quickly and avoid blocking or showing modal dialogs from the callback.
 
 ---
 

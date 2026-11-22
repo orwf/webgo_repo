@@ -374,6 +374,8 @@ Returning false causes WebGo to set WebView2's cancel flag.
 
 This is particularly important because a WebView may have access to privileged native bindings.
 
+WebGo also registers WebView2's `PermissionRequested` event on the base interface and `DownloadStarting` on `ICoreWebView2_4`. Their COM handlers are kept alive and unregistered during destruction. App callbacks run synchronously on the WebView UI thread; absent callbacks preserve the WebView2 default behavior.
+
 ---
 
 # COM layer

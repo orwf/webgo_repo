@@ -71,11 +71,38 @@ type WebView interface {
 	SetNavigationHandler(
 		fn func(uri string) bool,
 	)
+	SetDownloadHandler(fn func(DownloadInfo) DownloadDecision)
+	SetPermissionHandler(fn func(PermissionRequest) PermissionState)
 	EvalWithResult(
 		script string,
 		fn func(string),
 	)
 }
+
+type DownloadInfo = edge.DownloadInfo
+type DownloadDecision = edge.DownloadDecision
+type PermissionKind = edge.PermissionKind
+type PermissionState = edge.PermissionState
+type PermissionRequest = edge.PermissionRequest
+
+const (
+	PermissionKindUnknown                     = edge.PermissionKindUnknown
+	PermissionKindMicrophone                  = edge.PermissionKindMicrophone
+	PermissionKindCamera                      = edge.PermissionKindCamera
+	PermissionKindGeolocation                 = edge.PermissionKindGeolocation
+	PermissionKindNotifications               = edge.PermissionKindNotifications
+	PermissionKindOtherSensors                = edge.PermissionKindOtherSensors
+	PermissionKindClipboardRead               = edge.PermissionKindClipboardRead
+	PermissionKindMultipleAutomaticDownloads  = edge.PermissionKindMultipleAutomaticDownloads
+	PermissionKindFileReadWrite               = edge.PermissionKindFileReadWrite
+	PermissionKindAutoplay                    = edge.PermissionKindAutoplay
+	PermissionKindLocalFonts                  = edge.PermissionKindLocalFonts
+	PermissionKindMidiSystemExclusiveMessages = edge.PermissionKindMidiSystemExclusiveMessages
+	PermissionKindWindowManagement            = edge.PermissionKindWindowManagement
+	PermissionStateDefault                    = edge.PermissionStateDefault
+	PermissionStateAllow                      = edge.PermissionStateAllow
+	PermissionStateDeny                       = edge.PermissionStateDeny
+)
 
 var ownedWindowCount int32
 
@@ -227,6 +254,12 @@ type webview struct {
 	navigationMu sync.RWMutex
 
 	navigationHandler func(string) bool
+
+	downloadMu      sync.RWMutex
+	downloadHandler func(DownloadInfo) DownloadDecision
+
+	permissionMu      sync.RWMutex
+	permissionHandler func(PermissionRequest) PermissionState
 }
 
 type binding struct {
@@ -319,6 +352,9 @@ func (wv *webview) init() (err error) {
 	wv.browser.OnProcessFailed(func(kind edge.ProcessFailedKind) {
 		wv.handleProcessFailure(kind)
 	})
+
+	wv.browser.OnDownloadStarting(wv.handleDownloadStarting)
+	wv.browser.OnPermissionRequested(wv.handlePermissionRequested)
 
 	wv.browser.OnNavigationCompleted(
 		func(success bool) {
@@ -566,6 +602,59 @@ func (
 	wv.navigationHandler = fn
 
 	wv.navigationMu.Unlock()
+}
+
+func (wv *webview) SetDownloadHandler(fn func(DownloadInfo) DownloadDecision) {
+	wv.downloadMu.Lock()
+	wv.downloadHandler = fn
+	wv.downloadMu.Unlock()
+}
+
+func (wv *webview) handleDownloadStarting(args *edge.ICoreWebView2DownloadStartingEventArgs) {
+	wv.downloadMu.RLock()
+	handler := wv.downloadHandler
+	wv.downloadMu.RUnlock()
+	if handler == nil {
+		return
+	}
+
+	info, err := args.GetDownloadInfo()
+	if err != nil {
+		slog.Error("read WebView2 download information failed", "err", err)
+		return
+	}
+	if err := args.ApplyDecision(handler(info)); err != nil {
+		slog.Error("apply WebView2 download decision failed", "err", err)
+	}
+}
+
+func (wv *webview) SetPermissionHandler(fn func(PermissionRequest) PermissionState) {
+	wv.permissionMu.Lock()
+	wv.permissionHandler = fn
+	wv.permissionMu.Unlock()
+}
+
+func (wv *webview) handlePermissionRequested(args *edge.ICoreWebView2PermissionRequestedEventArgs) {
+	wv.permissionMu.RLock()
+	handler := wv.permissionHandler
+	wv.permissionMu.RUnlock()
+	if handler == nil {
+		return
+	}
+
+	request, err := args.GetPermissionRequest()
+	if err != nil {
+		slog.Error("read WebView2 permission request failed", "err", err)
+		return
+	}
+	state := handler(request)
+	if state != PermissionStateDefault && state != PermissionStateAllow && state != PermissionStateDeny {
+		slog.Error("permission handler returned an invalid state", "state", state, "uri", request.URI)
+		return
+	}
+	if err := args.SetState(state); err != nil {
+		slog.Error("set WebView2 permission state failed", "state", state, "uri", request.URI, "err", err)
+	}
 }
 
 // wndProc — ALL params uintptr, see comment in init().
