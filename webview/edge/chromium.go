@@ -261,10 +261,18 @@ func (c *Chromium) Embed(userDataFolder string) error {
 			fmt.Println("[Chromium] onReady returned")
 		})
 
-		env.CreateCoreWebView2Controller(uintptr(c.hwnd), c.ctrlHandler.AsPtr())
+		ctrlHandlerPtr := c.ctrlHandler.AsPtr()
+		retainCallbackRoot(ctrlHandlerPtr, c.ctrlHandler)
+		if err := env.CreateCoreWebView2Controller(uintptr(c.hwnd), ctrlHandlerPtr); err != nil {
+			slog.Error("CreateCoreWebView2Controller failed", "err", err)
+		}
+		callbackReleaseAndUnroot(ctrlHandlerPtr, &c.ctrlHandler.refs)
 	})
 
-	_, err := loader.CreateEnvironmentWithOptions(nil, udFolder, 0, c.envHandler.AsPtr())
+	envHandlerPtr := c.envHandler.AsPtr()
+	retainCallbackRoot(envHandlerPtr, c.envHandler)
+	_, err := loader.CreateEnvironmentWithOptions(nil, udFolder, 0, envHandlerPtr)
+	callbackReleaseAndUnroot(envHandlerPtr, &c.envHandler.refs)
 	return err
 }
 func (
@@ -344,20 +352,26 @@ func (c *Chromium) EvalWithResult(script string, fn func(string)) {
 	var handler *executeScriptCompletedHandler
 
 	handler = NewExecuteScriptCompletedHandler(func(result string) {
+		defer func() {
+			c.scriptMu.Lock()
+			delete(c.scriptHandlers, id)
+			c.scriptMu.Unlock()
+		}()
+
 		if fn != nil {
 			fn(result)
 		}
-
-		c.scriptMu.Lock()
-		delete(c.scriptHandlers, id)
-		c.scriptMu.Unlock()
 	})
 
 	c.scriptMu.Lock()
 	c.scriptHandlers[id] = handler
 	c.scriptMu.Unlock()
+	handlerPtr := handler.AsPtr()
+	retainCallbackRoot(handlerPtr, handler)
 
-	if err := c.webview.ExecuteScript(script, handler.AsPtr()); err != nil {
+	err := c.webview.ExecuteScript(script, handlerPtr)
+	callbackReleaseAndUnroot(handlerPtr, &handler.refs)
+	if err != nil {
 		c.scriptMu.Lock()
 		delete(c.scriptHandlers, id)
 		c.scriptMu.Unlock()
