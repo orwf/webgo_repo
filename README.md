@@ -201,7 +201,7 @@ WebGo currently targets **Windows**.
 You will need:
 
 - Windows 10 or Windows 11
-- Go 1.26 or newer
+- Go
 - Microsoft Edge WebView2 Runtime
 - `WebView2Loader.dll`
 
