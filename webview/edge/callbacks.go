@@ -26,6 +26,10 @@ var (
 	iidExecuteScriptCompleted = com.NewGUID("{49511172-CC67-4BCA-9923-137112F4C4CC}")
 
 	iidProcessFailed = com.NewGUID("{79E0AEA4-990B-42D9-AA1D-0FCC2E5BC7F1}")
+
+	iidDownloadStarting = com.NewGUID("{EFEDC989-C396-41CA-83F7-07F845A55724}")
+
+	iidPermissionRequested = com.NewGUID("{15E1C6A3-C72A-4DF3-91D7-D097FBEC6BFD}")
 )
 
 func callbackQueryInterface(
@@ -673,7 +677,6 @@ func (h *executeScriptCompletedHandler) AsPtr() uintptr {
 	return uintptr(unsafe.Pointer(h))
 }
 
-
 // ────────────────────────────────────────────────────────────────
 // Process failed
 // ────────────────────────────────────────────────────────────────
@@ -685,9 +688,9 @@ type processFailedHandler struct {
 
 type processFailedHandlerVTable struct {
 	QueryInterface com.ComProc
-	AddRef          com.ComProc
-	Release         com.ComProc
-	Invoke          com.ComProc
+	AddRef         com.ComProc
+	Release        com.ComProc
+	Invoke         com.ComProc
 }
 
 func NewProcessFailedHandler(
@@ -735,5 +738,89 @@ func NewProcessFailedHandler(
 }
 
 func (h *processFailedHandler) AsPtr() uintptr {
+	return uintptr(unsafe.Pointer(h))
+}
+
+type downloadStartingHandler struct {
+	vtable *downloadStartingHandlerVTable
+	refs   uint32
+}
+
+type downloadStartingHandlerVTable struct {
+	QueryInterface com.ComProc
+	AddRef         com.ComProc
+	Release        com.ComProc
+	Invoke         com.ComProc
+}
+
+func NewDownloadStartingHandler(
+	fn func(*ICoreWebView2DownloadStartingEventArgs),
+) *downloadStartingHandler {
+	h := &downloadStartingHandler{refs: 1}
+	h.vtable = &downloadStartingHandlerVTable{
+		QueryInterface: com.NewComProc(func(this, riid, ppvObject uintptr) uintptr {
+			obj := (*downloadStartingHandler)(unsafe.Pointer(this))
+			return callbackQueryInterface(this, riid, ppvObject, iidDownloadStarting, &obj.refs)
+		}),
+		AddRef: com.NewComProc(func(this uintptr) uintptr {
+			obj := (*downloadStartingHandler)(unsafe.Pointer(this))
+			return callbackAddRef(&obj.refs)
+		}),
+		Release: com.NewComProc(func(this uintptr) uintptr {
+			obj := (*downloadStartingHandler)(unsafe.Pointer(this))
+			return callbackRelease(&obj.refs)
+		}),
+		Invoke: com.NewComProc(func(this, sender, args uintptr) uintptr {
+			return safeCallback(func() {
+				fn((*ICoreWebView2DownloadStartingEventArgs)(unsafe.Pointer(args)))
+			})
+		}),
+	}
+	return h
+}
+
+func (h *downloadStartingHandler) AsPtr() uintptr {
+	return uintptr(unsafe.Pointer(h))
+}
+
+type permissionRequestedHandler struct {
+	vtable *permissionRequestedHandlerVTable
+	refs   uint32
+}
+
+type permissionRequestedHandlerVTable struct {
+	QueryInterface com.ComProc
+	AddRef         com.ComProc
+	Release        com.ComProc
+	Invoke         com.ComProc
+}
+
+func NewPermissionRequestedHandler(
+	fn func(*ICoreWebView2PermissionRequestedEventArgs),
+) *permissionRequestedHandler {
+	h := &permissionRequestedHandler{refs: 1}
+	h.vtable = &permissionRequestedHandlerVTable{
+		QueryInterface: com.NewComProc(func(this, riid, ppvObject uintptr) uintptr {
+			obj := (*permissionRequestedHandler)(unsafe.Pointer(this))
+			return callbackQueryInterface(this, riid, ppvObject, iidPermissionRequested, &obj.refs)
+		}),
+		AddRef: com.NewComProc(func(this uintptr) uintptr {
+			obj := (*permissionRequestedHandler)(unsafe.Pointer(this))
+			return callbackAddRef(&obj.refs)
+		}),
+		Release: com.NewComProc(func(this uintptr) uintptr {
+			obj := (*permissionRequestedHandler)(unsafe.Pointer(this))
+			return callbackRelease(&obj.refs)
+		}),
+		Invoke: com.NewComProc(func(this, sender, args uintptr) uintptr {
+			return safeCallback(func() {
+				fn((*ICoreWebView2PermissionRequestedEventArgs)(unsafe.Pointer(args)))
+			})
+		}),
+	}
+	return h
+}
+
+func (h *permissionRequestedHandler) AsPtr() uintptr {
 	return uintptr(unsafe.Pointer(h))
 }

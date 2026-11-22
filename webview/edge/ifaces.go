@@ -18,6 +18,7 @@ package edge
 
 import (
 	"fmt"
+	"path/filepath"
 	"syscall"
 	"unsafe"
 
@@ -38,6 +39,10 @@ type ICoreWebView2Environment struct{ vtable uintptr }
 type ICoreWebView2NavigationStartingEventArgs struct{ vtable uintptr }
 type ICoreWebView2NavigationCompletedEventArgs struct{ vtable uintptr }
 type ICoreWebView2ProcessFailedEventArgs struct{ vtable uintptr }
+type ICoreWebView2DownloadStartingEventArgs struct{ vtable uintptr }
+type ICoreWebView2DownloadOperation struct{ vtable uintptr }
+type ICoreWebView2PermissionRequestedEventArgs struct{ vtable uintptr }
+type ICoreWebView2_4 struct{ vtable uintptr }
 
 type ProcessFailedKind int32
 
@@ -63,7 +68,6 @@ func (a *ICoreWebView2ProcessFailedEventArgs) GetKind() (ProcessFailedKind, erro
 	)
 	return ProcessFailedKind(kind), com.CheckHR(r, "get_ProcessFailedKind")
 }
-
 
 func (a *ICoreWebView2NavigationCompletedEventArgs) GetWebErrorStatus() (uint32, error) {
 	var status uint32
@@ -557,6 +561,217 @@ func (w *ICoreWebView2) RemoveProcessFailedHandler(token EventRegistrationToken)
 	return com.CheckHR(r, "remove_ProcessFailed")
 }
 
+func (w *ICoreWebView2) AddPermissionRequestedHandler(handler uintptr) (EventRegistrationToken, error) {
+	var token EventRegistrationToken
+	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(w)), 23,
+		handler,
+		uintptr(unsafe.Pointer(&token)),
+	)
+	return token, com.CheckHR(r, "add_PermissionRequested")
+}
+
+func (w *ICoreWebView2) RemovePermissionRequestedHandler(token EventRegistrationToken) error {
+	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(w)), 24, uintptr(token.Value))
+	return com.CheckHR(r, "remove_PermissionRequested")
+}
+
+func (w *ICoreWebView2) QueryInterface4() (*ICoreWebView2_4, error) {
+	iid := com.NewGUID("{20D02D59-6DF2-42DC-BD06-F98A694B1302}")
+	var webview4 *ICoreWebView2_4
+	r, _, _ := com.VTableCall(
+		uintptr(unsafe.Pointer(w)),
+		0,
+		uintptr(unsafe.Pointer(iid)),
+		uintptr(unsafe.Pointer(&webview4)),
+	)
+	if err := com.CheckHR(r, "QueryInterface(ICoreWebView2_4)"); err != nil {
+		return nil, err
+	}
+	if webview4 == nil {
+		return nil, fmt.Errorf("QueryInterface(ICoreWebView2_4) returned a nil interface")
+	}
+	return webview4, nil
+}
+
+func (w *ICoreWebView2_4) AddDownloadStartingHandler(handler uintptr) (EventRegistrationToken, error) {
+	var token EventRegistrationToken
+	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(w)), 75,
+		handler,
+		uintptr(unsafe.Pointer(&token)),
+	)
+	return token, com.CheckHR(r, "add_DownloadStarting")
+}
+
+func (w *ICoreWebView2_4) RemoveDownloadStartingHandler(token EventRegistrationToken) error {
+	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(w)), 76, uintptr(token.Value))
+	return com.CheckHR(r, "remove_DownloadStarting")
+}
+
+func (w *ICoreWebView2_4) Release() uintptr {
+	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(w)), 2)
+	return r
+}
+
+func (a *ICoreWebView2DownloadStartingEventArgs) GetDownloadInfo() (DownloadInfo, error) {
+	var operation *ICoreWebView2DownloadOperation
+	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(a)), 4, uintptr(unsafe.Pointer(&operation)))
+	if err := com.CheckHR(r, "get_DownloadOperation"); err != nil {
+		return DownloadInfo{}, err
+	}
+	if operation == nil {
+		return DownloadInfo{}, fmt.Errorf("get_DownloadOperation returned a nil operation")
+	}
+	defer com.VTableCall(uintptr(unsafe.Pointer(operation)), 2)
+
+	var info DownloadInfo
+	var err error
+	if info.URI, err = operation.getString(3, "get_Uri"); err != nil {
+		return info, err
+	}
+	if info.ContentDisposition, err = operation.getString(4, "get_ContentDisposition"); err != nil {
+		return info, err
+	}
+	if info.MIMEType, err = operation.getString(5, "get_MimeType"); err != nil {
+		return info, err
+	}
+	var totalBytes int64
+	r, _, _ = com.VTableCall(uintptr(unsafe.Pointer(operation)), 6, uintptr(unsafe.Pointer(&totalBytes)))
+	if err := com.CheckHR(r, "get_TotalBytesToReceive"); err != nil {
+		return info, err
+	}
+	info.TotalBytesToReceive = totalBytes
+	return info, nil
+}
+
+func (a *ICoreWebView2DownloadStartingEventArgs) ApplyDecision(decision DownloadDecision) error {
+	if decision.Cancel {
+		r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(a)), 8, 1)
+		if err := com.CheckHR(r, "put_Cancel"); err != nil {
+			return err
+		}
+		return nil
+	}
+	if decision.Handled {
+		r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(a)), 9, 1)
+		if err := com.CheckHR(r, "put_Handled"); err != nil {
+			return err
+		}
+	}
+	if decision.ResultFilePath != "" {
+		if !filepath.IsAbs(decision.ResultFilePath) {
+			return fmt.Errorf("download result file path must be absolute")
+		}
+		path, err := syscall.UTF16PtrFromString(decision.ResultFilePath)
+		if err != nil {
+			return fmt.Errorf("encode download result file path: %w", err)
+		}
+		r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(a)), 10, uintptr(unsafe.Pointer(path)))
+		if err := com.CheckHR(r, "put_ResultFilePath"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (o *ICoreWebView2DownloadOperation) getString(index int, method string) (string, error) {
+	var value *uint16
+	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(o)), index, uintptr(unsafe.Pointer(&value)))
+	if err := com.CheckHR(r, method); err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", nil
+	}
+	defer com.CoTaskMemFree(uintptr(unsafe.Pointer(value)))
+	return com.UTF16PtrToString(value), nil
+}
+
+func (a *ICoreWebView2PermissionRequestedEventArgs) GetPermissionRequest() (PermissionRequest, error) {
+	var request PermissionRequest
+	uri, err := getCOMString(uintptr(unsafe.Pointer(a)), 3, "get_Uri")
+	if err != nil {
+		return request, err
+	}
+	request.URI = uri
+
+	var kind int32
+	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(a)), 4, uintptr(unsafe.Pointer(&kind)))
+	if err := com.CheckHR(r, "get_PermissionKind"); err != nil {
+		return request, err
+	}
+	request.Kind = PermissionKind(kind)
+
+	var userInitiated int32
+	r, _, _ = com.VTableCall(uintptr(unsafe.Pointer(a)), 5, uintptr(unsafe.Pointer(&userInitiated)))
+	if err := com.CheckHR(r, "get_IsUserInitiated"); err != nil {
+		return request, err
+	}
+	request.IsUserInitiated = userInitiated != 0
+	return request, nil
+}
+
+func (a *ICoreWebView2PermissionRequestedEventArgs) SetState(state PermissionState) error {
+	r, _, _ := com.VTableCall(uintptr(unsafe.Pointer(a)), 7, uintptr(state))
+	return com.CheckHR(r, "put_State")
+}
+
+func getCOMString(this uintptr, index int, method string) (string, error) {
+	var value *uint16
+	r, _, _ := com.VTableCall(this, index, uintptr(unsafe.Pointer(&value)))
+	if err := com.CheckHR(r, method); err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", nil
+	}
+	defer com.CoTaskMemFree(uintptr(unsafe.Pointer(value)))
+	return com.UTF16PtrToString(value), nil
+}
+
+type DownloadInfo struct {
+	URI                 string
+	ContentDisposition  string
+	MIMEType            string
+	TotalBytesToReceive int64
+}
+
+type DownloadDecision struct {
+	Cancel         bool
+	Handled        bool
+	ResultFilePath string
+}
+
+type PermissionKind int32
+
+const (
+	PermissionKindUnknown PermissionKind = iota
+	PermissionKindMicrophone
+	PermissionKindCamera
+	PermissionKindGeolocation
+	PermissionKindNotifications
+	PermissionKindOtherSensors
+	PermissionKindClipboardRead
+	PermissionKindMultipleAutomaticDownloads
+	PermissionKindFileReadWrite
+	PermissionKindAutoplay
+	PermissionKindLocalFonts
+	PermissionKindMidiSystemExclusiveMessages
+	PermissionKindWindowManagement
+)
+
+type PermissionState int32
+
+const (
+	PermissionStateDefault PermissionState = iota
+	PermissionStateAllow
+	PermissionStateDeny
+)
+
+type PermissionRequest struct {
+	URI             string
+	Kind            PermissionKind
+	IsUserInitiated bool
+}
 
 // ─────────────────────────────────────────────────────────────────
 // ICoreWebView2Settings

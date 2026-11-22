@@ -37,6 +37,40 @@ type WindowOptions = webview.WindowOptions
 // WebViewOptions configures WebGo and WebView2 creation.
 type WebViewOptions = webview.WebViewOptions
 
+// DownloadInfo describes a WebView2 download starting in the page.
+type DownloadInfo = webview.DownloadInfo
+
+// DownloadDecision configures how WebView2 starts a download.
+type DownloadDecision = webview.DownloadDecision
+
+// PermissionKind identifies the capability a page is requesting.
+type PermissionKind = webview.PermissionKind
+
+// PermissionState is the app's decision for a permission request.
+type PermissionState = webview.PermissionState
+
+// PermissionRequest contains the origin and context of a permission request.
+type PermissionRequest = webview.PermissionRequest
+
+const (
+	PermissionKindUnknown                     = webview.PermissionKindUnknown
+	PermissionKindMicrophone                  = webview.PermissionKindMicrophone
+	PermissionKindCamera                      = webview.PermissionKindCamera
+	PermissionKindGeolocation                 = webview.PermissionKindGeolocation
+	PermissionKindNotifications               = webview.PermissionKindNotifications
+	PermissionKindOtherSensors                = webview.PermissionKindOtherSensors
+	PermissionKindClipboardRead               = webview.PermissionKindClipboardRead
+	PermissionKindMultipleAutomaticDownloads  = webview.PermissionKindMultipleAutomaticDownloads
+	PermissionKindFileReadWrite               = webview.PermissionKindFileReadWrite
+	PermissionKindAutoplay                    = webview.PermissionKindAutoplay
+	PermissionKindLocalFonts                  = webview.PermissionKindLocalFonts
+	PermissionKindMidiSystemExclusiveMessages = webview.PermissionKindMidiSystemExclusiveMessages
+	PermissionKindWindowManagement            = webview.PermissionKindWindowManagement
+	PermissionStateDefault                    = webview.PermissionStateDefault
+	PermissionStateAllow                      = webview.PermissionStateAllow
+	PermissionStateDeny                       = webview.PermissionStateDeny
+)
+
 // WebView is the main WebGo application interface.
 //
 // It provides:
